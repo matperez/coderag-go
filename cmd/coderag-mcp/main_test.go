@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/matperez/coderag-go/internal/datadir"
 	"github.com/matperez/coderag-go/internal/storage"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestIndexOnly(t *testing.T) {
@@ -43,5 +46,57 @@ func TestIndexOnly(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("FileCount = %d, want 1", n)
+	}
+}
+
+func TestMCPCodebaseSearch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hello.go"), []byte("package main\nfunc HelloWorld() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "coderag-mcp-e2e")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	// Index first
+	indexCmd := exec.Command(bin, "-index-only", "-root", dir)
+	indexCmd.Dir = dir
+	if out, err := indexCmd.CombinedOutput(); err != nil {
+		t.Fatalf("index: %v\n%s", err, out)
+	}
+	// Start MCP server and call codebase_search
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	transport := &mcp.CommandTransport{Command: exec.Command(bin, "-root", dir)}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer session.Close()
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "codebase_search",
+		Arguments: map[string]any{
+			"query": "HelloWorld", "limit": 5, "include_content": true,
+			"file_extensions": []any{}, "path_filter": "", "exclude_paths": []any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("empty response")
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content type %T", res.Content[0])
+	}
+	if !strings.Contains(tc.Text, "hello.go") {
+		t.Errorf("response should contain hello.go: %s", tc.Text)
+	}
+	if !strings.Contains(tc.Text, "HelloWorld") {
+		t.Errorf("response should contain HelloWorld: %s", tc.Text)
 	}
 }

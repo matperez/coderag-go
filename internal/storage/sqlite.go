@@ -228,16 +228,16 @@ func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []
 	if len(chunkIDs) == 0 {
 		return idf, nil, nil
 	}
-	// Load chunk + file path + token_count, magnitude for each chunk ID
+	// Load chunk + file path + content + lines + token_count, magnitude for each chunk ID
 	candidates := make([]SearchCandidate, 0, len(chunkIDs))
 	for _, cid := range chunkIDs {
-		var path string
-		var tokenCount int
+		var path, content string
+		var startLine, endLine, tokenCount int
 		var magnitude float64
 		err := s.db.QueryRow(`
-			SELECT f.path, c.token_count, c.magnitude FROM chunks c
+			SELECT f.path, c.content, c.start_line, c.end_line, c.token_count, c.magnitude FROM chunks c
 			JOIN files f ON f.id = c.file_id WHERE c.id = ?
-		`, cid).Scan(&path, &tokenCount, &magnitude)
+		`, cid).Scan(&path, &content, &startLine, &endLine, &tokenCount, &magnitude)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -260,7 +260,8 @@ func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []
 		}
 		vecRows.Close()
 		candidates = append(candidates, SearchCandidate{
-			ChunkID: cid, FilePath: path, TokenCount: tokenCount, Magnitude: magnitude, Terms: termsMap,
+			ChunkID: cid, FilePath: path, Content: content, StartLine: startLine, EndLine: endLine,
+			TokenCount: tokenCount, Magnitude: magnitude, Terms: termsMap,
 		})
 	}
 	return idf, candidates, nil

@@ -38,6 +38,9 @@ type Result struct {
 	URI          string
 	Score        float64
 	MatchedTerms []string
+	Content      string
+	StartLine    int
+	EndLine      int
 }
 
 // BuildIndex builds a search index from documents (uri, content). Uses tokenizer for term extraction.
@@ -204,6 +207,9 @@ type TermScore struct {
 // StorageCandidate is one chunk's data for low-memory BM25 (from storage.SearchCandidates).
 type StorageCandidate struct {
 	FilePath   string
+	Content    string
+	StartLine  int
+	EndLine    int
 	TokenCount int
 	Terms      map[string]TermScore
 }
@@ -235,9 +241,12 @@ func SearchFromStorage(
 		avgDocLength = 1
 	}
 	type scored struct {
-		uri   string
-		score float64
-		terms []string
+		uri       string
+		score     float64
+		terms     []string
+		content   string
+		startLine int
+		endLine   int
 	}
 	var results []scored
 	for _, c := range candidates {
@@ -263,7 +272,9 @@ func SearchFromStorage(
 			denom := tf + bm25K1*(1-bm25B+bm25B*docLen/avgDocLength)
 			score += idfVal * (num / denom)
 		}
-		results = append(results, scored{"file://" + c.FilePath, score, matched})
+		results = append(results, scored{
+			"file://" + c.FilePath, score, matched, c.Content, c.StartLine, c.EndLine,
+		})
 	}
 	for i := 0; i < len(results); i++ {
 		for j := i + 1; j < len(results); j++ {
@@ -277,7 +288,11 @@ func SearchFromStorage(
 	}
 	out := make([]Result, limit)
 	for i := 0; i < limit; i++ {
-		out[i] = Result{URI: results[i].uri, Score: results[i].score, MatchedTerms: results[i].terms}
+		r := results[i]
+		out[i] = Result{
+			URI: r.uri, Score: r.score, MatchedTerms: r.terms,
+			Content: r.content, StartLine: r.startLine, EndLine: r.endLine,
+		}
 	}
 	return out
 }

@@ -47,6 +47,9 @@ type Storage interface {
 type SearchCandidate struct {
 	ChunkID    int64
 	FilePath   string
+	Content    string
+	StartLine  int
+	EndLine    int
 	TokenCount int
 	Magnitude  float64
 	Terms      map[string]VectorRow // term -> tf/tfidf/raw_freq

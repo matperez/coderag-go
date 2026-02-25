@@ -57,7 +57,8 @@ func TestIndexer_Index_e2e(t *testing.T) {
 			terms[k] = search.TermScore{TF: v.TF, TFIDF: v.TFIDF, RawFreq: v.RawFreq}
 		}
 		sc = append(sc, search.StorageCandidate{
-			FilePath: c.FilePath, TokenCount: c.TokenCount, Terms: terms,
+			FilePath: c.FilePath, Content: c.Content, StartLine: c.StartLine, EndLine: c.EndLine,
+			TokenCount: c.TokenCount, Terms: terms,
 		})
 		avgLen += float64(c.TokenCount)
 	}

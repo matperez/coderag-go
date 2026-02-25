@@ -83,6 +83,11 @@ func TestSearchFromStorage(t *testing.T) {
 			"user": {0.5, 0.8, 1},
 		}},
 	}
+	// Set content/lines for first candidate so Result has them
+	candidates[0].Content = "func GetUser()"
+	candidates[0].StartLine, candidates[0].EndLine = 1, 1
+	candidates[1].Content = "user id"
+	candidates[1].StartLine, candidates[1].EndLine = 2, 2
 	avgLen := 7.5
 	results := SearchFromStorage("get user", idf, candidates, avgLen, 10)
 	if len(results) != 2 {
