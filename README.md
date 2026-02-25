@@ -2,6 +2,8 @@
 
 Hybrid codebase search (BM25 keyword search + optional vector search) as a single Go binary with an MCP server for integration with Cursor, Claude, and others.
 
+Inspired by [SylphxAI/coderag](https://github.com/SylphxAI/coderag) (lightning-fast semantic code search with AST chunking, hybrid TF-IDF + vector, MCP-ready).
+
 ## Installation and usage
 
 **Requirements:** Go 1.25+
