@@ -1,0 +1,96 @@
+package astchunk
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestChunkByAST_Go(t *testing.T) {
+	content := `package main
+
+import "fmt"
+
+func Foo() int { return 1 }
+
+func Bar() string { return "x" }
+`
+	chunks, ok := ChunkByAST(context.Background(), content, ".go", 1000)
+	if !ok {
+		t.Fatal("ChunkByAST should succeed for valid Go")
+	}
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks (Foo, Bar), got %d", len(chunks))
+	}
+	var hasFoo, hasBar bool
+	for _, c := range chunks {
+		if c.Type != "function" && c.Type != "type" {
+			t.Errorf("chunk type %q", c.Type)
+		}
+		if strings.Contains(c.Content, "Foo") {
+			hasFoo = true
+		}
+		if strings.Contains(c.Content, "Bar") {
+			hasBar = true
+		}
+	}
+	if !hasFoo || !hasBar {
+		t.Errorf("expected chunks to contain Foo and Bar")
+	}
+}
+
+func TestChunkByAST_JavaScript(t *testing.T) {
+	content := `function foo() { return 1; }
+class Bar { method() {} }
+`
+	chunks, ok := ChunkByAST(context.Background(), content, ".js", 1000)
+	if !ok {
+		t.Fatal("ChunkByAST should succeed for valid JS")
+	}
+	if len(chunks) < 1 {
+		t.Errorf("expected at least 1 chunk, got %d", len(chunks))
+	}
+	// JS may merge or split; ensure we have function/class content
+	var hasFoo, hasBar bool
+	for _, c := range chunks {
+		if strings.Contains(c.Content, "foo") {
+			hasFoo = true
+		}
+		if strings.Contains(c.Content, "Bar") {
+			hasBar = true
+		}
+	}
+	if !hasFoo || !hasBar {
+		t.Errorf("expected chunks to contain foo and Bar declarations")
+	}
+}
+
+func TestChunkByAST_markdownFallback(t *testing.T) {
+	content := "# Hello\n\nSome markdown."
+	chunks, ok := ChunkByAST(context.Background(), content, ".md", 1000)
+	if ok {
+		t.Error("ChunkByAST should not succeed for .md (no grammar)")
+	}
+	if chunks != nil {
+		t.Error("chunks should be nil on fallback")
+	}
+}
+
+func TestChunkByAST_brokenCodeFallback(t *testing.T) {
+	content := "package main\nfunc (  broken"
+	chunks, ok := ChunkByAST(context.Background(), content, ".go", 1000)
+	if ok {
+		t.Error("ChunkByAST should not succeed for broken Go")
+	}
+	if chunks != nil {
+		t.Error("chunks should be nil on parse error")
+	}
+}
+
+func TestChunkByAST_unknownExt(t *testing.T) {
+	chunks, ok := ChunkByAST(context.Background(), "x", ".xyz", 1000)
+	if ok || chunks != nil {
+		t.Error("unknown extension should fallback")
+	}
+}
+
