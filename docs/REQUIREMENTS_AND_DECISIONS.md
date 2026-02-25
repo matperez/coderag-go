@@ -1,146 +1,146 @@
-# CodeRAG-Go: функциональные требования и принятые решения
+# CodeRAG-Go: functional requirements and decisions
 
-Документ описывает, что должна делать система (функциональные требования) и какие технические решения приняты для реализации в Go.
-
----
-
-## 1. Функциональные требования
-
-### 1.1. Индексация кодовой базы
-
-- **Сканирование:** обход файловой системы от корня проекта с учётом `.gitignore` и настраиваемых исключений.
-- **Ограничение размера файла:** файлы больше заданного порога (по умолчанию 1 MB) не индексируются или обрабатываются усечённо (на усмотрение реализации).
-- **Поддерживаемые форматы:** исходный код (TypeScript, JavaScript, Python, Go, Rust, Java и др.), конфиги (YAML, JSON, TOML), разметка (Markdown, HTML), прочие текстовые форматы. Индексация **кода и комментариев**, в том числе комментариев **на русском языке**.
-- **Семантическое разбиение (chunking):** разбиение файлов на чанки по границам смысла (функции, классы, методы, заголовки и т.д.), а не по фиксированному числу символов. Для языков без поддержки AST — fallback на разбиение по размеру (character-based).
-- **Персистентность:** индекс хранится локально (SQLite), чтобы при следующем запуске не переиндексировать всё заново. Поддержка инкрементальных обновлений по изменённым файлам.
-- **Режим watch (опционально):** при включённом режиме индекс обновляется при изменении файлов в реальном времени.
-
-### 1.2. Поиск
-
-- **Гибридный поиск:** комбинация ключевого поиска (BM25/TF-IDF) и опционально векторного (семантического) поиска по эмбеддингам.
-- **Ключевой поиск:** запрос токенизируется тем же способом, что и документы; ранжирование по BM25 (или TF-IDF). Учёт не только кода, но и комментариев; запросы на русском и английском должны находить релевантные фрагменты.
-- **Векторный поиск (опционально):** при наличии API-ключа (например, OpenAI) индексируются эмбеддинги чанков; по запросу вычисляется эмбеддинг и выполняется поиск ближайших соседей. Слияние с ключевым поиском (fusion) по настраиваемым весам.
-- **Фильтры:** по расширениям файлов, по путям (include/exclude), по типу чанка (например, только функции).
-- **Формат ответа:** путь к файлу, фрагмент кода (snippet), номера строк, релевантные термины, оценка релевантности. Ответ в формате, удобном для LLM (например, markdown с блоками кода).
-
-### 1.3. Запуск и CLI
-
-- **Бинарник:** один исполняемый файл (имя по усмотрению, например `coderag-go` или `coderag-mcp`).
-- **Режим по умолчанию:** запуск как MCP-сервер (stdio), ожидание запросов от IDE/клиента.
-- **Аргументы командной строки:**
-  - `--root=<path>` — корень кодовой базы для индексации и поиска (по умолчанию — текущая рабочая директория).
-  - `--index-only` — выполнить индексацию один раз и завершить работу (без запуска MCP). Удобно для предварительной индексации или CI.
-  - При необходимости: `--max-size=<bytes>`, `--no-auto-index` и др. по аналогии с референсной реализацией.
-- **Пример запуска (аналогично coderag):**
-  - MCP: `coderag-mcp --root=.` или `coderag-go --root=/path/to/project`
-  - Только индексация: `coderag-mcp --root=. --index-only`
-
-### 1.4. Хранение данных
-
-- **Каталог данных по умолчанию:** `~/.coderag-go/projects/<hash>`, где `<hash>` — устойчивый хеш от абсолютного пути корня проекта (например, первые 16 символов SHA-256). Разные проекты не пересекаются по данным.
-- В этом каталоге: SQLite-база индекса, при включённом векторном поиске — файлы LanceDB, при необходимости метаданные проекта (путь, последний доступ).
-- Переопределение пути (например, через переменную окружения или флаг) — опционально.
-
-### 1.5. Интеграция (MCP)
-
-- **MCP-сервер:** один бинарник работает как MCP-сервер (stdio-транспорт) для интеграции с Cursor, Claude Desktop, VS Code, Windsurf и др.
-- **Инструменты (tools):**
-  - **`codebase_search`** — поиск по кодовой базе. Параметры: запрос (`query`), лимит результатов (`limit`), фильтры (`file_extensions`, `path_filter`, `exclude_paths`), включение контента в ответ (`include_content`). Ответ: список релевантных фрагментов с путём, строками, сниппетом, оценкой.
-  - **`codebase_index_status`** — возвращает статус индексации: идёт ли индексация, прогресс (например, обработано файлов/чанков), количество проиндексированных файлов/чанков. Позволяет IDE показывать пользователю состояние индекса.
-
-### 1.6. Нефункциональные требования
-
-- **Один бинарник:** распространение и запуск в виде одного исполняемого файла без обязательной установки Python/Node/Rust рантаймов.
-- **Быстрый старт:** при наличии сохранённого индекса поиск доступен за время порядка сотен миллисекунд после запуска.
-- **Низкая латентность поиска:** ответ на запрос в пределах десятков миллисекунд на типичных объёмах (тысячи–десятки тысяч чанков).
-- **Офлайн:** ключевой поиск и использование сохранённого индекса работают без сети; векторный поиск требует доступ к API эмбеддингов.
-- **Модульность:** по возможности код структурируется в отдельные пакеты с чёткими границами (токенизатор, хранилище, chunking, поиск, MCP), зависимости через интерфейсы, чтобы компоненты можно было тестировать и заменять по отдельности.
-
-### 1.7. Качество кода и тестирование
-
-- **Тесты:** в проекте должны быть юнит-тесты на ключевую логику (токенизатор, BM25/TF-IDF, chunking, хранилище). Таблично-ориентированные тесты (table-driven) и изолированные тесты с моками для внешних зависимостей.
-- **Линтер:** использование статического анализа (например, `golangci-lint`) и его прохождение в CI; форматирование через `go fmt` / `goimports`.
-- **E2E-тесты:** наличие сквозных тестов там, где это необходимо: например, «индексация тестовой кодовой базы → поиск по запросу → проверка формата и наличия ожидаемых результатов», или «запуск MCP-сервера → вызов инструмента → проверка ответа». E2E не обязательны для каждой функции, но нужны для критичных сценариев (поиск, индексация, MCP).
-- **Бенчмарки:** бенчмарки Go (`go test -bench`) для функций, критичных к производительности: токенизация, построение/обновление индекса, выполнение поиска. Позволяют отслеживать регрессии и обосновывать оптимизации.
+This document describes what the system should do (functional requirements) and which technical decisions were made for the Go implementation.
 
 ---
 
-## 2. Принятые технические решения
+## 1. Functional requirements
 
-### 2.1. Платформа и ограничения
+### 1.1. Codebase indexing
 
-- **Язык и рантайм:** Go. Один процесс, один бинарник.
-- **Запрещённые зависимости:** без биндингов к Rust, WASM, Python; без вызова внешних процессов для токенизации или парсинга (всё в процессе основного приложения).
+- **Scanning:** traverse the filesystem from the project root with respect to `.gitignore` and configurable exclusions.
+- **File size limit:** files above a given threshold (default 1 MB) are not indexed or are processed in truncated form (implementation choice).
+- **Supported formats:** source code (TypeScript, JavaScript, Python, Go, Rust, Java, etc.), configs (YAML, JSON, TOML), markup (Markdown, HTML), other text formats. Indexing of **code and comments**, including comments **in Russian**.
+- **Semantic chunking:** split files into chunks at semantic boundaries (functions, classes, methods, headers, etc.), not by a fixed character count. For languages without AST support — fallback to size-based (character-based) chunking.
+- **Persistence:** index is stored locally (SQLite) so the next run does not re-index everything. Support for incremental updates based on changed files.
+- **Watch mode (optional):** when enabled, the index is updated in real time as files change.
 
-### 2.2. Токенизатор (поиск по коду и комментариям, в т.ч. на русском)
+### 1.2. Search
 
-- **Выбор:** расширенный код-ориентированный токенизатор в pure Go (без StarCoder2 и без внешних моделей).
-- **Правила:**
-  - **Границы слов:** слово = последовательность букв любой письменности (Unicode `\p{L}`) + цифры (`\p{N}`) + подчёркивание. Разбиение по пробелам и пунктуации. Это обеспечивает корректную токенизацию и кода (идентификаторы), и комментариев на русском («получить пользователя» → отдельные термины).
-  - **camelCase / snake_case:** разбиение применяется **только к частям, состоящим из ASCII** и похожим на идентификаторы (например, `getUserById` → `get`, `User`, `By`, `Id`). Токены с кириллицей не режутся дополнительно.
-  - **Нормализация:** приведение к нижнему регистру для всех токенов.
-  - **Опционально:** для токенов из кириллицы — русский стемминг (например, [snowballstem/snowball](https://pkg.go.dev/github.com/snowballstem/snowball)), чтобы «пользователь» и «пользователя» совпадали при поиске.
-- **Зависимости:** [fatih/camelcase](https://github.com/fatih/camelcase) для разбиения идентификаторов; при необходимости — стеммер из snowballstem/snowball (pure Go). Никаких внешних процессов и биндингов.
+- **Hybrid search:** combination of keyword search (BM25/TF-IDF) and optional vector (semantic) search over embeddings.
+- **Keyword search:** query is tokenized the same way as documents; ranking by BM25 (or TF-IDF). Covers both code and comments; queries in Russian and English should match relevant fragments.
+- **Vector search (optional):** when an API key is available (e.g. OpenAI), chunk embeddings are indexed; the query is embedded and k-NN search is run. Results are merged with keyword search (fusion) using configurable weights.
+- **Filters:** by file extensions, by paths (include/exclude), by chunk type (e.g. functions only).
+- **Response format:** file path, code snippet, line numbers, relevant terms, relevance score. Output in a format suitable for LLMs (e.g. markdown with code blocks).
 
-### 2.3. AST chunking (семантическое разбиение кода)
+### 1.3. Launch and CLI
 
-- **Парсеры:** tree-sitter через Go-биндинги. Вариант «всё в одном»: [smacker/go-tree-sitter](https://github.com/smacker/go-tree-sitter) с встроенными грамматиками (javascript, typescript, python, golang, java, rust, html, markdown, toml, yaml и др.).
-- **Слой chunking:** реализуется поверх tree-sitter в самом проекте: маппинг расширения файла → язык, обход AST, выделение узлов по семантическим границам (функция, класс, метод, заголовок и т.д.), добавление контекста (импорты, типы) к чанкам, слияние мелких и разбиение крупных чанков по `maxChunkSize`. Логика и перечень границ берутся за основу из референсной реализации (coderag-matperez) и документации по языкам.
-- **Fallback:** для неподдерживаемых расширений или при ошибке парсинга — разбиение по размеру (character-based chunking).
-- **Примечание:** smacker/go-tree-sitter использует CGO. Если требуется бинарник без CGO, парсинг можно вынести в отдельный исполняемый модуль (subprocess) или рассмотреть альтернативы.
+- **Binary:** a single executable (name at discretion, e.g. `coderag-go` or `coderag-mcp`).
+- **Default mode:** run as MCP server (stdio), waiting for requests from IDE/client.
+- **Command-line arguments:**
+  - `--root=<path>` — codebase root to index and search (default: current working directory).
+  - `--index-only` — run indexing once and exit (without starting MCP). Useful for pre-indexing or CI.
+  - As needed: `--max-size=<bytes>`, `--no-auto-index`, etc., following the reference implementation.
+- **Example usage (similar to coderag):**
+  - MCP: `coderag-mcp --root=.` or `coderag-go --root=/path/to/project`
+  - Index only: `coderag-mcp --root=. --index-only`
 
-### 2.4. Хранилище индекса
+### 1.4. Data storage
 
-- **СУБД:** SQLite. Драйвер: [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) (pure Go) для отсутствия CGO или [mattn/go-sqlite3](https://github.com/mattn/go-sqlite3) при допустимости CGO.
-- **Схема:** таблицы для файлов (path, content/hash, mtime, language), чанков (file_id, content, type, start_line, end_line, metadata), TF-IDF/BM25 векторов (термы по чанкам). Миграции — вручную или через [golang-migrate](https://github.com/golang-migrate/migrate) / [goose](https://github.com/pressly/goose).
-- **Расположение БД:** по умолчанию `~/.coderag-go/projects/<hash>/`, где `<hash>` — устойчивый хеш от абсолютного пути корня проекта (см. п. 1.4).
+- **Default data directory:** `~/.coderag-go/projects/<hash>`, where `<hash>` is a stable hash of the project root’s absolute path (e.g. first 16 characters of SHA-256). Different projects use separate data.
+- In this directory: SQLite index database; with vector search enabled — LanceDB files; optionally project metadata (path, last access).
+- Overriding the path (e.g. via environment variable or flag) is optional.
 
-### 2.5. Векторное хранилище (опционально)
+### 1.5. Integration (MCP)
 
-- **Библиотека:** [lancedb/lancedb-go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) — официальный Go SDK. Хранение эмбеддингов и поиск ближайших соседей.
-- **Использование:** только при наличии настроенного провайдера эмбеддингов (например, OpenAI API key). Путь к БД — в каталоге данных проекта (например, `vectors.lance`).
+- **MCP server:** one binary acts as an MCP server (stdio transport) for integration with Cursor, Claude Desktop, VS Code, Windsurf, etc.
+- **Tools:**
+  - **`codebase_search`** — search the codebase. Parameters: query (`query`), result limit (`limit`), filters (`file_extensions`, `path_filter`, `exclude_paths`), include content in response (`include_content`). Response: list of relevant fragments with path, lines, snippet, score.
+  - **`codebase_index_status`** — returns indexing status: whether indexing is in progress, progress (e.g. files/chunks processed), number of indexed files/chunks. Lets the IDE show the user the index state.
 
-### 2.6. Эмбеддинги (опционально)
+### 1.6. Non-functional requirements
 
-- **Провайдер:** HTTP-клиент к OpenAI Embeddings API или к OpenAI-совместимому endpoint (base URL + API key). Конфигурация через переменные окружения (например, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `EMBEDDING_MODEL`).
-- **Реализация:** минимальная обёртка в Go (или использование существующего OpenAI Go SDK), батчирование запросов, учёт лимитов. Без зависимостей от Python/Node.
+- **Single binary:** distribution and run as one executable without requiring Python/Node/Rust runtimes.
+- **Fast startup:** with an existing index, search is available within hundreds of milliseconds after launch.
+- **Low search latency:** response within tens of milliseconds on typical sizes (thousands to tens of thousands of chunks).
+- **Offline:** keyword search and use of a stored index work without network; vector search requires access to an embeddings API.
+- **Modularity:** where possible, code is organized into packages with clear boundaries (tokenizer, storage, chunking, search, MCP), dependencies via interfaces, so components can be tested and replaced independently.
 
-### 2.7. Файловый watcher
+### 1.7. Code quality and testing
 
-- **Библиотека:** [fsnotify](https://github.com/fsnotify/fsnotify). Кроссплатформенный, стабильный. При изменении/создании/удалении файлов — постановка в очередь и инкрементальное обновление индекса (без полного пересканирования).
-
-### 2.8. MCP-сервер
-
-- **SDK:** [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk). Реализация MCP-сервера с транспортом stdio.
-- **Инструменты:** `codebase_search` (поиск с параметрами query, limit, file_extensions, path_filter, exclude_paths, include_content), `codebase_index_status` (статус индексации: прогресс, количество файлов/чанков). Формат ответа — в духе референсной реализации (markdown с блоками кода для поиска).
-
-### 2.9. Поиск (BM25 / TF-IDF)
-
-- **Алгоритм:** BM25 (или классический TF-IDF) по чанкам. Формулы и структуры данных переносятся из референсной реализации; токенизация — по выбранному токенизатору (см. п. 2.2).
-- **Low-memory режим:** при работе с персистентным хранилищем поиск может выполняться по данным в SQLite (запросы к таблицам векторов), без полной загрузки индекса в память, чтобы поддерживать большие кодовые базы.
-
-### 2.10. Качество кода и инструменты разработки
-
-- **Линтер:** [golangci-lint](https://golangci-lint.run/); конфигурация в репозитории, проверка в CI.
-- **Тесты:** `go test`, таблично-ориентированные юнит-тесты, моки для интерфейсов (хранилище, эмбеддинги и т.д.).
-- **E2E:** отдельные тесты или тестовые пакеты для сценариев «индекс → поиск» и при необходимости «MCP → вызов инструмента»; использование тестовых фикстур (небольшая кодовая база в `testdata`).
-- **Бенчмарки:** `go test -bench` для пакетов токенизации, TF-IDF/BM25, индексации и поиска; результаты учитывать при рефакторинге.
+- **Tests:** unit tests for core logic (tokenizer, BM25/TF-IDF, chunking, storage). Table-driven tests and isolated tests with mocks for external dependencies.
+- **Linter:** static analysis (e.g. `golangci-lint`) and passing it in CI; formatting via `go fmt` / `goimports`.
+- **E2E tests:** end-to-end tests where needed: e.g. “index test codebase → search by query → check format and expected results”, or “start MCP server → call tool → check response”. E2E not required for every feature, but needed for critical flows (search, indexing, MCP).
+- **Benchmarks:** Go benchmarks (`go test -bench`) for performance-critical parts: tokenization, index build/update, search. Used to catch regressions and justify optimizations.
 
 ---
 
-## 3. Порядок реализации (рекомендуемый)
+## 2. Technical decisions
 
-1. **Хранилище и базовый индекс:** схема SQLite, миграции, сохранение/загрузка файлов и чанков (сначала character-based chunking).
-2. **Токенизатор:** реализация расширенного код-ориентированного токенизатора (Unicode + camelCase + опционально стемминг).
-3. **Поиск:** BM25/TF-IDF, интеграция с токенизатором и хранилищем; проверка на типичных запросах (в т.ч. на русском).
-4. **AST chunking:** интеграция go-tree-sitter, маппинг языков, обход AST и нарезка по границам; fallback на character-based.
-5. **Watcher и инкрементальные обновления:** fsnotify, очередь изменений, переиндексация только затронутых файлов.
-6. **Векторный поиск и эмбеддинги:** LanceDB, HTTP к API, слияние с ключевым поиском.
-7. **MCP-сервер:** обвязка вокруг индексера и поиска, инструменты `codebase_search` и `codebase_index_status`, конфигурация через CLI (`--root`, `--index-only`).
+### 2.1. Platform and constraints
+
+- **Language and runtime:** Go. Single process, single binary.
+- **Disallowed dependencies:** no bindings to Rust, WASM, Python; no calling out to external processes for tokenization or parsing (everything in-process).
+
+### 2.2. Tokenizer (search over code and comments, including Russian)
+
+- **Choice:** extended code-oriented tokenizer in pure Go (no StarCoder2, no external models).
+- **Rules:**
+  - **Word boundaries:** word = sequence of letters in any script (Unicode `\p{L}`) + digits (`\p{N}`) + underscore. Split on spaces and punctuation. This gives correct tokenization for both code (identifiers) and Russian comments (“получить пользователя” → separate terms).
+  - **camelCase / snake_case:** splitting is applied **only to ASCII segments** that look like identifiers (e.g. `getUserById` → `get`, `User`, `By`, `Id`). Tokens with Cyrillic are not split further.
+  - **Normalization:** lowercase for all tokens.
+  - **Optional:** for Cyrillic tokens — Russian stemming (e.g. [snowballstem/snowball](https://pkg.go.dev/github.com/snowballstem/snowball)) so “пользователь” and “пользователя” match in search.
+- **Dependencies:** [fatih/camelcase](https://github.com/fatih/camelcase) for identifier splitting; optionally snowball stemmer (pure Go). No external processes or bindings.
+
+### 2.3. AST chunking (semantic code splitting)
+
+- **Parsers:** tree-sitter via Go bindings. All-in-one option: [smacker/go-tree-sitter](https://github.com/smacker/go-tree-sitter) with bundled grammars (javascript, typescript, python, golang, java, rust, html, markdown, toml, yaml, etc.).
+- **Chunking layer:** implemented on top of tree-sitter in this project: map file extension → language, walk AST, extract nodes at semantic boundaries (function, class, method, header, etc.), add context (imports, types) to chunks, merge small and split large chunks by `maxChunkSize`. Logic and boundary list are based on the reference implementation (coderag-matperez) and language docs.
+- **Fallback:** for unsupported extensions or parse errors — size-based (character-based) chunking.
+- **Note:** smacker/go-tree-sitter uses CGO. If a CGO-free binary is required, parsing could be moved to a separate executable (subprocess) or alternatives considered.
+
+### 2.4. Index storage
+
+- **Database:** SQLite. Driver: [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) (pure Go) to avoid CGO, or [mattn/go-sqlite3](https://github.com/mattn/go-sqlite3) if CGO is acceptable.
+- **Schema:** tables for files (path, content/hash, mtime, language), chunks (file_id, content, type, start_line, end_line, metadata), TF-IDF/BM25 vectors (terms per chunk). Migrations — manual or via [golang-migrate](https://github.com/golang-migrate/migrate) / [goose](https://github.com/pressly/goose).
+- **DB location:** default `~/.coderag-go/projects/<hash>/`, where `<hash>` is a stable hash of the project root path (see 1.4).
+
+### 2.5. Vector storage (optional)
+
+- **Library:** [lancedb/lancedb-go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) — official Go SDK. Store embeddings and run nearest-neighbor search.
+- **Usage:** only when an embedding provider is configured (e.g. OpenAI API key). DB path in the project data directory (e.g. `vectors.lance`).
+
+### 2.6. Embeddings (optional)
+
+- **Provider:** HTTP client to OpenAI Embeddings API or an OpenAI-compatible endpoint (base URL + API key). Configuration via environment variables (e.g. `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `EMBEDDING_MODEL`).
+- **Implementation:** minimal wrapper in Go (or existing OpenAI Go SDK), request batching, rate limits. No Python/Node dependencies.
+
+### 2.7. File watcher
+
+- **Library:** [fsnotify](https://github.com/fsnotify/fsnotify). Cross-platform, stable. On file change/create/delete — enqueue and incrementally update the index (no full rescan).
+
+### 2.8. MCP server
+
+- **SDK:** [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk). MCP server implementation with stdio transport.
+- **Tools:** `codebase_search` (search with query, limit, file_extensions, path_filter, exclude_paths, include_content), `codebase_index_status` (indexing status: progress, file/chunk counts). Response format aligned with the reference (markdown with code blocks for search).
+
+### 2.9. Search (BM25 / TF-IDF)
+
+- **Algorithm:** BM25 (or classic TF-IDF) over chunks. Formulas and data structures carried over from the reference; tokenization by the chosen tokenizer (see 2.2).
+- **Low-memory mode:** with persistent storage, search can run against SQLite (queries to vector tables) without loading the full index into memory, to support large codebases.
+
+### 2.10. Code quality and tooling
+
+- **Linter:** [golangci-lint](https://golangci-lint.run/); config in repo, run in CI.
+- **Tests:** `go test`, table-driven unit tests, mocks for interfaces (storage, embeddings, etc.).
+- **E2E:** dedicated tests or test packages for “index → search” and if needed “MCP → call tool”; use test fixtures (small codebase in `testdata`).
+- **Benchmarks:** `go test -bench` for tokenization, TF-IDF/BM25, indexing, and search; consider results when refactoring.
 
 ---
 
-## 4. Ссылки
+## 3. Recommended implementation order
 
-- Референсная реализация: **coderag-matperez** (TypeScript/Bun).
-- Исследование перехода на Go: **coderag-matperez/docs/RESEARCH_GO_REWRITE.md**.
+1. **Storage and base index:** SQLite schema, migrations, save/load files and chunks (character-based chunking first).
+2. **Tokenizer:** extended code-oriented tokenizer (Unicode + camelCase + optional stemming).
+3. **Search:** BM25/TF-IDF, integration with tokenizer and storage; validation on typical queries (including Russian).
+4. **AST chunking:** go-tree-sitter integration, language mapping, AST walk and chunk boundaries; fallback to character-based.
+5. **Watcher and incremental updates:** fsnotify, change queue, re-index only affected files.
+6. **Vector search and embeddings:** LanceDB, HTTP to API, merge with keyword search.
+7. **MCP server:** wiring around indexer and search, tools `codebase_search` and `codebase_index_status`, CLI config (`--root`, `--index-only`).
+
+---
+
+## 4. References
+
+- Reference implementation: **coderag-matperez** (TypeScript/Bun).
+- Go migration research: **coderag-matperez/docs/RESEARCH_GO_REWRITE.md**.
