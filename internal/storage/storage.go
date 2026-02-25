@@ -39,6 +39,10 @@ type Storage interface {
 	ListFiles() ([]string, error)
 	FileCount() (int, error)
 	ChunkCount() (int, error)
+	// DeleteFile removes the file and all its chunks and vectors from the index.
+	DeleteFile(path string) error
+	// DocFreqs returns the number of distinct chunks containing each term (for IDF).
+	DocFreqs(terms []string) (map[string]int, error)
 	// Search support: load chunks that contain any of the given terms.
 	SearchCandidates(terms []string) (idf map[string]float64, candidates []SearchCandidate, err error)
 }

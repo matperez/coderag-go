@@ -14,6 +14,7 @@ import (
 	"github.com/matperez/coderag-go/internal/scan"
 	"github.com/matperez/coderag-go/internal/storage"
 	"github.com/matperez/coderag-go/internal/tokenizer"
+	"github.com/matperez/coderag-go/internal/watcher"
 )
 
 const defaultMaxChunkSize = 1000
@@ -72,6 +73,137 @@ func (x *Indexer) GetStatus() IndexStatus {
 		s.TotalChunks = cc
 	}
 	return s
+}
+
+// ProcessEvent applies a watcher event (add/change/remove) to the index.
+func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.Op) error {
+	if op == watcher.Remove {
+		return x.storage.DeleteFile(relPath)
+	}
+	// Add or Change
+	fullPath := filepath.Join(x.root, relPath)
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil
+	}
+	hash := sha256Hex(content)
+	existing, _ := x.storage.GetFile(relPath)
+	if existing != nil && existing.Hash == hash {
+		return nil
+	}
+	info, _ := os.Stat(fullPath)
+	mtime := int64(0)
+	size := int64(len(content))
+	if info != nil {
+		mtime = info.ModTime().UnixMilli()
+		size = info.Size()
+	}
+	if err := x.storage.StoreFile(storage.File{
+		Path: relPath, Content: string(content), Hash: hash,
+		Size: size, Mtime: mtime, IndexedAt: nowMillis(),
+	}); err != nil {
+		return err
+	}
+	ext := filepath.Ext(relPath)
+	var chunks []chunk.Chunk
+	if astChunks, ok := astchunk.ChunkByAST(ctx, string(content), ext, x.maxChunk); ok {
+		chunks = astChunks
+	} else {
+		chunks = chunk.ChunkByCharacters(string(content), x.maxChunk)
+	}
+	type chunkData struct {
+		content   string
+		chunkType string
+		startLine int
+		endLine   int
+		termFreq  map[string]int
+	}
+	var chunkDatas []chunkData
+	for _, c := range chunks {
+		tokens := x.tok.Tokenize(c.Content)
+		freq := make(map[string]int)
+		for _, t := range tokens {
+			freq[t]++
+		}
+		chunkDatas = append(chunkDatas, chunkData{
+			content: c.Content, chunkType: c.Type,
+			startLine: c.StartLine, endLine: c.EndLine, termFreq: freq,
+		})
+	}
+	N, _ := x.storage.ChunkCount()
+	n := float64(N)
+	if n < 1 {
+		n = 1
+	}
+	allTerms := make(map[string]bool)
+	for _, cd := range chunkDatas {
+		for t := range cd.termFreq {
+			allTerms[t] = true
+		}
+	}
+	termList := make([]string, 0, len(allTerms))
+	for t := range allTerms {
+		termList = append(termList, t)
+	}
+	df, err := x.storage.DocFreqs(termList)
+	if err != nil {
+		return err
+	}
+	idf := make(map[string]float64)
+	for _, t := range termList {
+		d := df[t]
+		idf[t] = math.Log((n+1)/float64(d+1)) + 1
+	}
+	stChunks := make([]storage.Chunk, len(chunkDatas))
+	for i, cd := range chunkDatas {
+		totalTf := 0.0
+		for _, c := range cd.termFreq {
+			totalTf += float64(c)
+		}
+		tfidf := make(map[string]float64)
+		mag := 0.0
+		tokenCount := 0
+		for t, c := range cd.termFreq {
+			tf := float64(c) / totalTf
+			if totalTf <= 0 {
+				tf = 0
+			}
+			tfidfVal := tf * idf[t]
+			tfidf[t] = tfidfVal
+			mag += tfidfVal * tfidfVal
+			tokenCount += c
+		}
+		mag = math.Sqrt(mag)
+		stChunks[i] = storage.Chunk{
+			Content: cd.content, Type: cd.chunkType,
+			StartLine: cd.startLine, EndLine: cd.endLine,
+			TokenCount: tokenCount, Magnitude: mag,
+		}
+	}
+	chunkIDs, err := x.storage.StoreChunks(relPath, stChunks)
+	if err != nil {
+		return err
+	}
+	for i, cid := range chunkIDs {
+		cd := chunkDatas[i]
+		totalTf := 0.0
+		for _, c := range cd.termFreq {
+			totalTf += float64(c)
+		}
+		var rows []storage.VectorRow
+		for term, rawFreq := range cd.termFreq {
+			tf := float64(rawFreq) / totalTf
+			if totalTf <= 0 {
+				tf = 0
+			}
+			tfidfVal := tf * idf[term]
+			rows = append(rows, storage.VectorRow{
+				Term: term, TF: tf, TFIDF: tfidfVal, RawFreq: rawFreq,
+			})
+		}
+		_ = x.storage.StoreChunkVectors(cid, rows)
+	}
+	return nil
 }
 
 // Index scans root, chunks files, and stores them with TF-IDF vectors.

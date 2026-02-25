@@ -158,6 +158,63 @@ func (s *SQLiteStorage) ChunkCount() (int, error) {
 	return n, err
 }
 
+// DeleteFile removes the file and all its chunks and vectors.
+func (s *SQLiteStorage) DeleteFile(path string) error {
+	var fileID int64
+	err := s.db.QueryRow("SELECT id FROM files WHERE path = ?", path).Scan(&fileID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec("DELETE FROM document_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE file_id = ?)", fileID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec("DELETE FROM chunks WHERE file_id = ?", fileID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec("DELETE FROM files WHERE id = ?", fileID)
+	return err
+}
+
+// DocFreqs returns the number of distinct chunks containing each term.
+func (s *SQLiteStorage) DocFreqs(terms []string) (map[string]int, error) {
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(terms))
+	args := make([]interface{}, len(terms))
+	for i, t := range terms {
+		placeholders[i] = "?"
+		args[i] = t
+	}
+	rows, err := s.db.Query(
+		"SELECT term, COUNT(DISTINCT chunk_id) FROM document_vectors WHERE term IN ("+
+			strings.Join(placeholders, ",")+") GROUP BY term",
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	df := make(map[string]int)
+	for _, t := range terms {
+		df[t] = 0
+	}
+	for rows.Next() {
+		var term string
+		var count int
+		if err := rows.Scan(&term, &count); err != nil {
+			return nil, err
+		}
+		df[term] = count
+	}
+	return df, rows.Err()
+}
+
 // SearchCandidates returns IDF for the given terms and chunks that contain any of them.
 func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []SearchCandidate, error) {
 	if len(terms) == 0 {

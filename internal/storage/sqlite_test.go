@@ -150,3 +150,56 @@ func TestSQLiteStorage_SearchCandidates(t *testing.T) {
 		t.Errorf("terms: %v", candidates[0].Terms)
 	}
 }
+
+func TestSQLiteStorage_DeleteFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "del.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "a.go", Content: "a", Hash: "1", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := s.StoreChunks("a.go", []Chunk{{Content: "x", Type: "text", StartLine: 1, EndLine: 1}})
+	_ = s.StoreChunkVectors(ids[0], []VectorRow{{Term: "x", TF: 1, TFIDF: 1, RawFreq: 1}})
+	if err := s.DeleteFile("a.go"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetFile("a.go"); got != nil {
+		t.Error("GetFile should return nil after DeleteFile")
+	}
+	if n, _ := s.FileCount(); n != 0 {
+		t.Errorf("FileCount = %d", n)
+	}
+	if n, _ := s.ChunkCount(); n != 0 {
+		t.Errorf("ChunkCount = %d", n)
+	}
+}
+
+func TestSQLiteStorage_DocFreqs(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "df.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "a.go", Content: "a", Hash: "1", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := s.StoreChunks("a.go", []Chunk{
+		{Content: "get user", Type: "text", StartLine: 1, EndLine: 1},
+		{Content: "user id", Type: "text", StartLine: 2, EndLine: 2},
+	})
+	_ = s.StoreChunkVectors(ids[0], []VectorRow{{Term: "get", TF: 0.5, TFIDF: 1, RawFreq: 1}, {Term: "user", TF: 0.5, TFIDF: 1, RawFreq: 1}})
+	_ = s.StoreChunkVectors(ids[1], []VectorRow{{Term: "user", TF: 0.5, TFIDF: 1, RawFreq: 1}, {Term: "id", TF: 0.5, TFIDF: 1, RawFreq: 1}})
+	df, err := s.DocFreqs([]string{"get", "user", "id", "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if df["get"] != 1 || df["user"] != 2 || df["id"] != 1 || df["missing"] != 0 {
+		t.Errorf("DocFreqs: %v", df)
+	}
+}

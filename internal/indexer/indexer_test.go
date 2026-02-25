@@ -11,6 +11,7 @@ import (
 	"github.com/matperez/coderag-go/internal/datadir"
 	"github.com/matperez/coderag-go/internal/search"
 	"github.com/matperez/coderag-go/internal/storage"
+	"github.com/matperez/coderag-go/internal/watcher"
 )
 
 func TestIndexer_Index_e2e(t *testing.T) {
@@ -195,5 +196,64 @@ class Helper { run() {} }
 	}
 	if !found {
 		t.Error("expected a chunk from api.go containing HandleRequest (AST chunking)")
+	}
+}
+
+func TestIndexer_ProcessEvent_incrementalUpdate(t *testing.T) {
+	dir := t.TempDir()
+	fpath := filepath.Join(dir, "x.go")
+	if err := os.WriteFile(fpath, []byte("package p\nfunc Old() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, err := datadir.DataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	idx := New(Config{Storage: st, Root: dir})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Change file content
+	if err := os.WriteFile(fpath, []byte("package p\nfunc NewContent() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.ProcessEvent(context.Background(), "x.go", watcher.Change); err != nil {
+		t.Fatal(err)
+	}
+	// Search for new content (tokenizer: "NewContent" -> "new", "content")
+	idf, candidates, err := st.SearchCandidates([]string{"new", "content"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected chunk with new/content after ProcessEvent(Change)")
+	}
+	var sc []search.StorageCandidate
+	avgLen := 0.0
+	for _, c := range candidates {
+		terms := make(map[string]search.TermScore)
+		for k, v := range c.Terms {
+			terms[k] = search.TermScore{TF: v.TF, TFIDF: v.TFIDF, RawFreq: v.RawFreq}
+		}
+		sc = append(sc, search.StorageCandidate{
+			FilePath: c.FilePath, Content: c.Content, StartLine: c.StartLine, EndLine: c.EndLine,
+			TokenCount: c.TokenCount, Terms: terms,
+		})
+		avgLen += float64(c.TokenCount)
+	}
+	if len(sc) > 0 {
+		avgLen /= float64(len(sc))
+	}
+	results := search.SearchFromStorage("new content", idf, sc, avgLen, 10)
+	if len(results) == 0 {
+		t.Error("search for 'new content' should return result after incremental update")
+	}
+	if len(results) > 0 && !strings.Contains(results[0].URI, "x.go") {
+		t.Errorf("expected x.go in result: %s", results[0].URI)
 	}
 }
