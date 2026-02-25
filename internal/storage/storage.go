@@ -39,4 +39,15 @@ type Storage interface {
 	ListFiles() ([]string, error)
 	FileCount() (int, error)
 	ChunkCount() (int, error)
+	// Search support: load chunks that contain any of the given terms.
+	SearchCandidates(terms []string) (idf map[string]float64, candidates []SearchCandidate, err error)
+}
+
+// SearchCandidate is a chunk with its term vectors for BM25 scoring.
+type SearchCandidate struct {
+	ChunkID    int64
+	FilePath   string
+	TokenCount int
+	Magnitude  float64
+	Terms      map[string]VectorRow // term -> tf/tfidf/raw_freq
 }

@@ -193,3 +193,91 @@ func Search(query string, index *SearchIndex, limit int) []Result {
 	}
 	return out
 }
+
+// TermScore holds TF/TFIDF/RawFreq for one term in a chunk.
+type TermScore struct {
+	TF      float64
+	TFIDF   float64
+	RawFreq int
+}
+
+// StorageCandidate is one chunk's data for low-memory BM25 (from storage.SearchCandidates).
+type StorageCandidate struct {
+	FilePath   string
+	TokenCount int
+	Terms      map[string]TermScore
+}
+
+// SearchFromStorage runs BM25 search using storage-backed candidates (low-memory).
+func SearchFromStorage(
+	query string,
+	idf map[string]float64,
+	candidates []StorageCandidate,
+	avgDocLength float64,
+	limit int,
+) []Result {
+	if limit <= 0 || len(candidates) == 0 {
+		return nil
+	}
+	tokens := tokenizer.Tokenize(query)
+	seen := make(map[string]bool)
+	var queryTerms []string
+	for _, t := range tokens {
+		if !seen[t] {
+			seen[t] = true
+			queryTerms = append(queryTerms, t)
+		}
+	}
+	if len(queryTerms) == 0 {
+		return nil
+	}
+	if avgDocLength < 1 {
+		avgDocLength = 1
+	}
+	type scored struct {
+		uri   string
+		score float64
+		terms []string
+	}
+	var results []scored
+	for _, c := range candidates {
+		var matched []string
+		for _, q := range queryTerms {
+			if _, ok := c.Terms[q]; ok {
+				matched = append(matched, q)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		docLen := float64(c.TokenCount)
+		if docLen < 1 {
+			docLen = 1
+		}
+		score := 0.0
+		for _, term := range matched {
+			r := c.Terms[term]
+			tf := float64(r.RawFreq)
+			idfVal := idf[term]
+			num := tf * (bm25K1 + 1)
+			denom := tf + bm25K1*(1-bm25B+bm25B*docLen/avgDocLength)
+			score += idfVal * (num / denom)
+		}
+		results = append(results, scored{"file://" + c.FilePath, score, matched})
+	}
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].score > results[i].score {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+	if limit > len(results) {
+		limit = len(results)
+	}
+	out := make([]Result, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = Result{URI: results[i].uri, Score: results[i].score, MatchedTerms: results[i].terms}
+	}
+	return out
+}

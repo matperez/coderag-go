@@ -3,8 +3,10 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -154,6 +156,114 @@ func (s *SQLiteStorage) ChunkCount() (int, error) {
 	var n int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM chunks").Scan(&n)
 	return n, err
+}
+
+// SearchCandidates returns IDF for the given terms and chunks that contain any of them.
+func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []SearchCandidate, error) {
+	if len(terms) == 0 {
+		return nil, nil, nil
+	}
+	var N int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM chunks").Scan(&N); err != nil {
+		return nil, nil, err
+	}
+	n := float64(N)
+	if n < 1 {
+		n = 1
+	}
+	// Document frequency per term
+	placeholders := make([]string, len(terms))
+	args := make([]interface{}, len(terms))
+	for i, t := range terms {
+		placeholders[i] = "?"
+		args[i] = t
+	}
+	rows, err := s.db.Query(
+		"SELECT term, COUNT(DISTINCT chunk_id) FROM document_vectors WHERE term IN ("+
+			strings.Join(placeholders, ",")+") GROUP BY term",
+		args...,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	df := make(map[string]int)
+	for rows.Next() {
+		var term string
+		var count int
+		if err := rows.Scan(&term, &count); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		df[term] = count
+	}
+	rows.Close()
+	idf := make(map[string]float64)
+	for _, term := range terms {
+		d := df[term]
+		idf[term] = math.Log((n+1)/float64(d+1)) + 1
+	}
+	// Chunk IDs that have any of the terms
+	qArgs := make([]interface{}, len(terms))
+	for i, t := range terms {
+		qArgs[i] = t
+	}
+	rows2, err := s.db.Query(
+		"SELECT DISTINCT chunk_id FROM document_vectors WHERE term IN ("+
+			strings.Join(placeholders, ",")+")",
+		qArgs...,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	var chunkIDs []int64
+	for rows2.Next() {
+		var id int64
+		if err := rows2.Scan(&id); err != nil {
+			rows2.Close()
+			return nil, nil, err
+		}
+		chunkIDs = append(chunkIDs, id)
+	}
+	rows2.Close()
+	if len(chunkIDs) == 0 {
+		return idf, nil, nil
+	}
+	// Load chunk + file path + token_count, magnitude for each chunk ID
+	candidates := make([]SearchCandidate, 0, len(chunkIDs))
+	for _, cid := range chunkIDs {
+		var path string
+		var tokenCount int
+		var magnitude float64
+		err := s.db.QueryRow(`
+			SELECT f.path, c.token_count, c.magnitude FROM chunks c
+			JOIN files f ON f.id = c.file_id WHERE c.id = ?
+		`, cid).Scan(&path, &tokenCount, &magnitude)
+		if err != nil {
+			return nil, nil, err
+		}
+		vecRows, err := s.db.Query(
+			"SELECT term, tf, tfidf, raw_freq FROM document_vectors WHERE chunk_id = ? AND term IN ("+
+				strings.Join(placeholders, ",")+")",
+			append([]interface{}{cid}, qArgs...)...,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		termsMap := make(map[string]VectorRow)
+		for vecRows.Next() {
+			var r VectorRow
+			if err := vecRows.Scan(&r.Term, &r.TF, &r.TFIDF, &r.RawFreq); err != nil {
+				vecRows.Close()
+				return nil, nil, err
+			}
+			termsMap[r.Term] = r
+		}
+		vecRows.Close()
+		candidates = append(candidates, SearchCandidate{
+			ChunkID: cid, FilePath: path, TokenCount: tokenCount, Magnitude: magnitude, Terms: termsMap,
+		})
+	}
+	return idf, candidates, nil
 }
 
 func nullString(s string) interface{} {

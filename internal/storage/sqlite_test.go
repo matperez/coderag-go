@@ -114,3 +114,39 @@ func TestSQLiteStorage_StoreChunkVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSQLiteStorage_SearchCandidates(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "search.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "p.go", Content: "x", Hash: "h", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.StoreChunks("p.go", []Chunk{{Content: "get user", Type: "text", StartLine: 1, EndLine: 1}})
+	if err != nil || len(ids) != 1 {
+		t.Fatal(err)
+	}
+	if err := s.StoreChunkVectors(ids[0], []VectorRow{
+		{Term: "get", TF: 0.5, TFIDF: 1.0, RawFreq: 1},
+		{Term: "user", TF: 0.5, TFIDF: 1.0, RawFreq: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idf, candidates, err := s.SearchCandidates([]string{"get", "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idf) != 2 || idf["get"] <= 0 || idf["user"] <= 0 {
+		t.Errorf("idf: %v", idf)
+	}
+	if len(candidates) != 1 || candidates[0].FilePath != "p.go" {
+		t.Errorf("candidates: %+v", candidates)
+	}
+	if len(candidates[0].Terms) != 2 {
+		t.Errorf("terms: %v", candidates[0].Terms)
+	}
+}

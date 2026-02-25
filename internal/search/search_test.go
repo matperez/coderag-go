@@ -72,3 +72,23 @@ func TestSearch_limit(t *testing.T) {
 		t.Errorf("limit 2: got %d results", len(results))
 	}
 }
+
+func TestSearchFromStorage(t *testing.T) {
+	idf := map[string]float64{"user": 1.5, "get": 1.2}
+	candidates := []StorageCandidate{
+		{FilePath: "a.go", TokenCount: 10, Terms: map[string]TermScore{
+			"user": {0.3, 0.5, 2}, "get": {0.2, 0.3, 1},
+		}},
+		{FilePath: "b.go", TokenCount: 5, Terms: map[string]TermScore{
+			"user": {0.5, 0.8, 1},
+		}},
+	}
+	avgLen := 7.5
+	results := SearchFromStorage("get user", idf, candidates, avgLen, 10)
+	if len(results) != 2 {
+		t.Fatalf("got %d results", len(results))
+	}
+	if results[0].URI != "file://a.go" {
+		t.Errorf("top result: %s", results[0].URI)
+	}
+}
