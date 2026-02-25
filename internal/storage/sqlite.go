@@ -139,7 +139,7 @@ func (s *SQLiteStorage) ListFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var paths []string
 	for rows.Next() {
 		var p string
@@ -206,7 +206,7 @@ func (s *SQLiteStorage) DocFreqs(terms []string) (map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	df := make(map[string]int)
 	for _, t := range terms {
 		df[t] = 0
@@ -220,6 +220,51 @@ func (s *SQLiteStorage) DocFreqs(terms []string) (map[string]int, error) {
 		df[term] = count
 	}
 	return df, rows.Err()
+}
+
+// RebuildIDFAndTfidf recomputes IDF from document_vectors, updates tfidf per row, and chunk magnitudes.
+func (s *SQLiteStorage) RebuildIDFAndTfidf() error {
+	N, err := s.ChunkCount()
+	if err != nil {
+		return err
+	}
+	n := float64(N)
+	if n < 1 {
+		n = 1
+	}
+	rows, err := s.db.Query("SELECT term, COUNT(DISTINCT chunk_id) FROM document_vectors GROUP BY term")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	type termDF struct {
+		term string
+		df   int
+	}
+	var terms []termDF
+	for rows.Next() {
+		var t termDF
+		if err := rows.Scan(&t.term, &t.df); err != nil {
+			return err
+		}
+		terms = append(terms, t)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, t := range terms {
+		idf := math.Log((n+1)/float64(t.df+1)) + 1
+		_, err := s.db.Exec("UPDATE document_vectors SET tfidf = tf * ? WHERE term = ?", idf, t.term)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(`
+		UPDATE chunks SET magnitude = (
+			SELECT COALESCE(SQRT(SUM(tfidf * tfidf)), 0) FROM document_vectors WHERE chunk_id = chunks.id
+		)
+	`)
+	return err
 }
 
 // SearchCandidates returns IDF for the given terms and chunks that contain any of them.
@@ -255,12 +300,12 @@ func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []
 		var term string
 		var count int
 		if err := rows.Scan(&term, &count); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, nil, err
 		}
 		df[term] = count
 	}
-	rows.Close()
+	_ = rows.Close()
 	idf := make(map[string]float64)
 	for _, term := range terms {
 		d := df[term]
@@ -283,12 +328,12 @@ func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []
 	for rows2.Next() {
 		var id int64
 		if err := rows2.Scan(&id); err != nil {
-			rows2.Close()
+			_ = rows2.Close()
 			return nil, nil, err
 		}
 		chunkIDs = append(chunkIDs, id)
 	}
-	rows2.Close()
+	_ = rows2.Close()
 	if len(chunkIDs) == 0 {
 		return idf, nil, nil
 	}
@@ -317,12 +362,12 @@ func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []
 		for vecRows.Next() {
 			var r VectorRow
 			if err := vecRows.Scan(&r.Term, &r.TF, &r.TFIDF, &r.RawFreq); err != nil {
-				vecRows.Close()
+				_ = vecRows.Close()
 				return nil, nil, err
 			}
 			termsMap[r.Term] = r
 		}
-		vecRows.Close()
+		_ = vecRows.Close()
 		candidates = append(candidates, SearchCandidate{
 			ChunkID: cid, FilePath: path, Content: content, StartLine: startLine, EndLine: endLine,
 			TokenCount: tokenCount, Magnitude: magnitude, Terms: termsMap,
@@ -356,7 +401,7 @@ func (s *SQLiteStorage) ListChunkIDsByFile(path string) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []int64
 	for rows.Next() {
 		var id int64

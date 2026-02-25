@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestTruncateToRunes(t *testing.T) {
+	tests := []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"abc", 3, "abc"},
+		{"abc", 5, "abc"},
+		{"abc", 0, "abc"},
+		{"abc", -1, "abc"},
+		{"hello", 2, "he"},
+		{"привет", 3, "при"},
+		{"a\x80b", 2, "a\x80"}, // invalid UTF-8 rune still counts as one rune
+	}
+	for _, tt := range tests {
+		got := truncateToRunes(tt.s, tt.n)
+		if got != tt.want {
+			t.Errorf("truncateToRunes(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+		}
+	}
+}
+
 func TestMockProvider_GenerateEmbedding(t *testing.T) {
 	ctx := context.Background()
 	p := &MockProvider{Dimension: 4}

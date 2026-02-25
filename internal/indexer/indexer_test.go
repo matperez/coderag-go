@@ -18,13 +18,36 @@ import (
 	"github.com/matperez/coderag-go/internal/watcher"
 )
 
+func TestContentSafeForEmbedding(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		want bool
+	}{
+		{"empty", "", true},
+		{"plain text", "package main\nfunc main() {}", true},
+		{"invalid UTF-8", "hello\x80world", false},
+		{"null byte", "foo\x00bar", false},
+		{"binary", "\x00\x01\x02\x03\x04\x05", false},
+		{"mostly binary", strings.Repeat("x", 20) + "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10", false},
+		{"unicode text", "привет мир", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := contentSafeForEmbedding(tt.s); got != tt.want {
+				t.Errorf("contentSafeForEmbedding() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // countingStorage wraps a Storage and counts StoreFile, StoreChunks, DeleteFile calls.
 type countingStorage struct {
 	storage.Storage
 	storeFileCalls   int
 	storeChunksCalls int
 	deleteFileCalls  []string
-	mu                sync.Mutex
+	mu               sync.Mutex
 }
 
 func (c *countingStorage) StoreFile(f storage.File) error {
@@ -46,6 +69,10 @@ func (c *countingStorage) DeleteFile(path string) error {
 	c.deleteFileCalls = append(c.deleteFileCalls, path)
 	c.mu.Unlock()
 	return c.Storage.DeleteFile(path)
+}
+
+func (c *countingStorage) RebuildIDFAndTfidf() error {
+	return c.Storage.RebuildIDFAndTfidf()
 }
 
 func (c *countingStorage) reset() {
@@ -147,6 +174,7 @@ func TestIndexer_GetStatus_duringIndex(t *testing.T) {
 		close(done)
 	}()
 	var sawProgress bool
+Loop:
 	for i := 0; i < 50; i++ {
 		s := idx.GetStatus()
 		if s.IsIndexing && s.Progress > 0 {
@@ -155,7 +183,7 @@ func TestIndexer_GetStatus_duringIndex(t *testing.T) {
 		}
 		select {
 		case <-done:
-			break
+			break Loop
 		default:
 			// small yield
 		}

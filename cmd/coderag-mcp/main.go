@@ -11,15 +11,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/matperez/coderag-go/internal/datadir"
 	"github.com/matperez/coderag-go/internal/embeddings"
-	"github.com/matperez/coderag-go/internal/metadata"
 	"github.com/matperez/coderag-go/internal/indexer"
+	"github.com/matperez/coderag-go/internal/metadata"
 	"github.com/matperez/coderag-go/internal/search"
 	"github.com/matperez/coderag-go/internal/storage"
 	"github.com/matperez/coderag-go/internal/tokenizer"
 	"github.com/matperez/coderag-go/internal/vectorstore"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const requestTimeout = 30 * time.Second
@@ -72,7 +73,7 @@ func main() {
 				slog.Warn("vector store disabled", "error", err)
 			} else {
 				vecStore = vs
-				defer vs.Close()
+				defer func() { _ = vs.Close() }()
 			}
 		}
 	}
@@ -83,14 +84,15 @@ func main() {
 		slog.Error("storage open failed", "error", err)
 		os.Exit(1)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	idx := indexer.New(indexer.Config{
-		Storage:     st,
-		Root:        rootPath,
-		MaxFileSize: *maxSize,
-		Embedder:    embedder,
-		VecStore:    vecStore,
+		Storage:           st,
+		Root:              rootPath,
+		MaxFileSize:       *maxSize,
+		IndexingBatchSize: 0, // use default
+		Embedder:          embedder,
+		VecStore:          vecStore,
 	})
 
 	if *indexOnly {
@@ -107,7 +109,7 @@ func main() {
 	if embedder != nil && vecStore != nil {
 		hybridOpts = &search.HybridOpts{
 			VecStore:   vecStore,
-			Embedder:  embedder,
+			Embedder:   embedder,
 			BM25Weight: 0.5,
 		}
 	}
@@ -138,12 +140,12 @@ func parseLogLevel(flagVal string) slog.Level {
 }
 
 type codebaseSearchArgs struct {
-	Query          string   `json:"query" jsonschema:"Search query"`
-	Limit          *int     `json:"limit" jsonschema:"Max number of results (default 10)"`
+	Query          string    `json:"query" jsonschema:"Search query"`
+	Limit          *int      `json:"limit" jsonschema:"Max number of results (default 10)"`
 	FileExtensions *[]string `json:"file_extensions" jsonschema:"Filter by extensions e.g. .go,.js"`
-	PathFilter     *string  `json:"path_filter" jsonschema:"Include only paths matching this substring"`
+	PathFilter     *string   `json:"path_filter" jsonschema:"Include only paths matching this substring"`
 	ExcludePaths   *[]string `json:"exclude_paths" jsonschema:"Exclude paths containing any of these"`
-	IncludeContent bool     `json:"include_content" jsonschema:"Include snippet content in results"`
+	IncludeContent bool      `json:"include_content" jsonschema:"Include snippet content in results"`
 }
 
 func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybridOpts *search.HybridOpts) {
@@ -238,8 +240,18 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-func ptrStr(s *string) string { if s == nil { return "" }; return *s }
-func ptrSlice(s *[]string) []string { if s == nil { return nil }; return *s }
+func ptrStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+func ptrSlice(s *[]string) []string {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
 
 func matchFilters(path string, ext []string, pathFilter string, exclude []string) bool {
 	if pathFilter != "" && !strings.Contains(path, pathFilter) {
@@ -269,9 +281,9 @@ func formatSearchResultsMarkdown(results []search.Result, includeContent bool, r
 		if root != "" && !filepath.IsAbs(path) {
 			path = filepath.Join(root, path)
 		}
-		b.WriteString(fmt.Sprintf("### %d. %s", i+1, path))
+		fmt.Fprintf(&b, "### %d. %s", i+1, path)
 		if r.StartLine > 0 || r.EndLine > 0 {
-			b.WriteString(fmt.Sprintf(" (L%d-L%d)", r.StartLine, r.EndLine))
+			fmt.Fprintf(&b, " (L%d-L%d)", r.StartLine, r.EndLine)
 		}
 		b.WriteString("\n\n")
 		if includeContent && r.Content != "" {

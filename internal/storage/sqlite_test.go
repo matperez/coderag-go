@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 )
@@ -258,5 +259,102 @@ func TestSQLiteStorage_ListChunkIDsByFile(t *testing.T) {
 	}
 	if list2, _ := s.ListChunkIDsByFile("missing.go"); len(list2) != 0 {
 		t.Errorf("ListChunkIDsByFile(missing): got %v", list2)
+	}
+}
+
+func TestSQLiteStorage_RebuildIDFAndTfidf(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "rebuild.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "a.go", Content: "a", Hash: "1", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	chunks := []Chunk{
+		{Content: "get user", Type: "text", StartLine: 1, EndLine: 1, TokenCount: 2, Magnitude: 0},
+		{Content: "user id", Type: "text", StartLine: 2, EndLine: 2, TokenCount: 2, Magnitude: 0},
+	}
+	ids, err := s.StoreChunks("a.go", chunks)
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("StoreChunks: %v", err)
+	}
+	_ = s.StoreChunkVectors(ids[0], []VectorRow{
+		{Term: "get", TF: 0.5, TFIDF: 0, RawFreq: 1},
+		{Term: "user", TF: 0.5, TFIDF: 0, RawFreq: 1},
+	})
+	_ = s.StoreChunkVectors(ids[1], []VectorRow{
+		{Term: "user", TF: 0.5, TFIDF: 0, RawFreq: 1},
+		{Term: "id", TF: 0.5, TFIDF: 0, RawFreq: 1},
+	})
+	if err := s.RebuildIDFAndTfidf(); err != nil {
+		t.Fatalf("RebuildIDFAndTfidf: %v", err)
+	}
+	N := 2
+	n := float64(N)
+	if n < 1 {
+		n = 1
+	}
+	idfGet := math.Log((n+1)/float64(1+1)) + 1
+	idfUser := math.Log((n+1)/float64(2+1)) + 1
+	idfID := math.Log((n+1)/float64(1+1)) + 1
+	wantIDF := map[string]float64{"get": idfGet, "user": idfUser, "id": idfID}
+	tfidfGet := 0.5 * idfGet
+	tfidfUser := 0.5 * idfUser
+	tfidfID := 0.5 * idfID
+	mag0 := math.Sqrt(tfidfGet*tfidfGet + tfidfUser*tfidfUser)
+	mag1 := math.Sqrt(tfidfUser*tfidfUser + tfidfID*tfidfID)
+	wantByChunkID := map[int64]SearchCandidate{
+		ids[0]: {
+			ChunkID: ids[0], FilePath: "a.go", Content: "get user", StartLine: 1, EndLine: 1,
+			TokenCount: 2, Magnitude: mag0,
+			Terms: map[string]VectorRow{
+				"get":  {Term: "get", TF: 0.5, TFIDF: tfidfGet, RawFreq: 1},
+				"user": {Term: "user", TF: 0.5, TFIDF: tfidfUser, RawFreq: 1},
+			},
+		},
+		ids[1]: {
+			ChunkID: ids[1], FilePath: "a.go", Content: "user id", StartLine: 2, EndLine: 2,
+			TokenCount: 2, Magnitude: mag1,
+			Terms: map[string]VectorRow{
+				"user": {Term: "user", TF: 0.5, TFIDF: tfidfUser, RawFreq: 1},
+				"id":   {Term: "id", TF: 0.5, TFIDF: tfidfID, RawFreq: 1},
+			},
+		},
+	}
+	gotIDF, gotCandidates, err := s.SearchCandidates([]string{"get", "user", "id"})
+	if err != nil {
+		t.Fatalf("SearchCandidates: %v", err)
+	}
+	if len(gotIDF) != len(wantIDF) {
+		t.Fatalf("idf: got %v want %v", gotIDF, wantIDF)
+	}
+	for term, w := range wantIDF {
+		if g, ok := gotIDF[term]; !ok || math.Abs(g-w) > 1e-9 {
+			t.Errorf("idf[%q]: got %v want %v", term, gotIDF[term], w)
+		}
+	}
+	if len(gotCandidates) != len(wantByChunkID) {
+		t.Fatalf("candidates: got %d want %d", len(gotCandidates), len(wantByChunkID))
+	}
+	for _, g := range gotCandidates {
+		w, ok := wantByChunkID[g.ChunkID]
+		if !ok {
+			t.Errorf("unexpected chunk id %d", g.ChunkID)
+			continue
+		}
+		if w.FilePath != g.FilePath || w.Content != g.Content ||
+			w.StartLine != g.StartLine || w.EndLine != g.EndLine || w.TokenCount != g.TokenCount ||
+			math.Abs(w.Magnitude-g.Magnitude) > 1e-9 {
+			t.Errorf("candidate ChunkID=%d: got %+v want %+v", g.ChunkID, g, w)
+		}
+		for term, wr := range w.Terms {
+			gr, ok := g.Terms[term]
+			if !ok || math.Abs(gr.TFIDF-wr.TFIDF) > 1e-9 || math.Abs(gr.TF-wr.TF) > 1e-9 || gr.RawFreq != wr.RawFreq {
+				t.Errorf("candidate ChunkID=%d Terms[%q]: got %+v want %+v", g.ChunkID, term, gr, wr)
+			}
+		}
 	}
 }

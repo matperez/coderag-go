@@ -49,6 +49,8 @@ type Storage interface {
 	GetChunk(chunkID int64) (*ChunkInfo, error)
 	// ListChunkIDsByFile returns chunk IDs for the given file path (for vector store cleanup).
 	ListChunkIDsByFile(path string) ([]int64, error)
+	// RebuildIDFAndTfidf recomputes IDF from document_vectors, updates tfidf in document_vectors, and chunk magnitudes.
+	RebuildIDFAndTfidf() error
 }
 
 // ChunkInfo is the minimal chunk data for search result resolution.

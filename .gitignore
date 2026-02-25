@@ -4,3 +4,7 @@
 # LanceDB native artifacts (see Makefile target download-lancedb)
 /lib/
 /include/
+
+# Debug dumps from embeddings on API error
+embed_failed_request.json
+embed_failed_response.json

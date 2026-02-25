@@ -8,9 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/matperez/coderag-go/internal/datadir"
 	"github.com/matperez/coderag-go/internal/storage"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestIndexOnly(t *testing.T) {

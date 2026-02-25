@@ -120,9 +120,9 @@ func HybridFromStorage(
 
 	// Combined score: normalize BM25 and vector to [0,1], then weighted sum
 	type scoredID struct {
-		id     int64
-		score  float64
-		terms  []string
+		id        int64
+		score     float64
+		terms     []string
 		bm25Score float64
 	}
 	var scored []scoredID

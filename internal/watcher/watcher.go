@@ -28,10 +28,10 @@ type Event struct {
 
 // Options configures the watcher.
 type Options struct {
-	Root        string   // directory to watch
-	Extensions  []string  // if non-nil, only emit for these extensions
-	UseGitignore bool    // respect .gitignore
-	Debounce    time.Duration // coalesce events (default 100ms)
+	Root         string        // directory to watch
+	Extensions   []string      // if non-nil, only emit for these extensions
+	UseGitignore bool          // respect .gitignore
+	Debounce     time.Duration // coalesce events (default 100ms)
 }
 
 // Watcher watches a directory tree and emits filtered, deduplicated, debounced events.
@@ -92,7 +92,7 @@ func (w *Watcher) Start() error {
 		})
 	}
 	if err := addDir(w.opts.Root); err != nil {
-		fw.Close()
+		_ = fw.Close()
 		return err
 	}
 	pending := make(map[string]Op)
@@ -108,7 +108,7 @@ func (w *Watcher) Start() error {
 		w.mu.Unlock()
 	}
 	go func() {
-		defer fw.Close()
+		defer func() { _ = fw.Close() }()
 		for {
 			select {
 			case <-w.done:

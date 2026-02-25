@@ -33,6 +33,8 @@ Example for local Ollama:
 export OPENAI_BASE_URL="http://localhost:11434/v1"
 export OPENAI_API_KEY="ollama"
 export EMBEDDING_MODEL="nomic-embed-text-v2-moe"
+# Optional: set context size (e.g. 8192); also truncates long inputs so they fit (or set EMBEDDING_MAX_INPUT_CHARS explicitly)
+export OLLAMA_NUM_CTX=8192
 ./coderag-mcp --root /path/to/project
 ```
 

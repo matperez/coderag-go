@@ -16,13 +16,16 @@ import (
 	"github.com/lancedb/lancedb-go/pkg/lancedb"
 )
 
-const embeddingCol = "embedding"
+const (
+	tableName    = "chunks"
+	embeddingCol = "embedding"
+)
 
 // LanceStore implements Store using LanceDB at dataDir/vectors.lance.
 type LanceStore struct {
-	conn     contracts.IConnection
-	dim      int
-	alloc    memory.Allocator
+	conn      contracts.IConnection
+	dim       int
+	alloc     memory.Allocator
 	tableName string
 }
 

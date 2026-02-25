@@ -65,14 +65,21 @@ class Bar { method() {} }
 	}
 }
 
-func TestChunkByAST_markdownFallback(t *testing.T) {
-	content := "# Hello\n\nSome markdown."
+func TestChunkByAST_Markdown(t *testing.T) {
+	content := "# Hello\n\nSome paragraph.\n\n- list item"
 	chunks, ok := ChunkByAST(context.Background(), content, ".md", 1000)
-	if ok {
-		t.Error("ChunkByAST should not succeed for .md (no grammar)")
+	if !ok {
+		t.Fatal("ChunkByAST should succeed for .md with grammar")
 	}
-	if chunks != nil {
-		t.Error("chunks should be nil on fallback")
+	if len(chunks) == 0 {
+		t.Error("expected at least one chunk for markdown")
+	}
+}
+
+func TestChunkByAST_txtFallback(t *testing.T) {
+	chunks, ok := ChunkByAST(context.Background(), "plain text", ".txt", 1000)
+	if ok || chunks != nil {
+		t.Error(".txt has no grammar, should fallback")
 	}
 }
 
@@ -93,4 +100,3 @@ func TestChunkByAST_unknownExt(t *testing.T) {
 		t.Error("unknown extension should fallback")
 	}
 }
-

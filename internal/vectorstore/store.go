@@ -4,8 +4,6 @@ import (
 	"context"
 )
 
-const tableName = "chunks"
-
 // Row is a single vector row (id, vector, metadata).
 type Row struct {
 	ID       int64

@@ -51,7 +51,7 @@ func appliedMigrations(db *sql.DB) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make(map[string]bool)
 	for rows.Next() {
 		var name string

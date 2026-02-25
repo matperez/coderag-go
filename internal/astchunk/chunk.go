@@ -4,17 +4,30 @@ import (
 	"context"
 	"strings"
 
-	"github.com/matperez/coderag-go/internal/chunk"
 	sitter "github.com/smacker/go-tree-sitter"
+
+	"github.com/matperez/coderag-go/internal/chunk"
 )
 
 // ChunkNodeTypes maps language (by ext) to AST node types that form chunk boundaries.
 var ChunkNodeTypes = map[string][]string{
-	"go": {`function_declaration`, `type_declaration`},
-	"js": {`function_declaration`, `class_declaration`},
+	"go":         {`function_declaration`, `type_declaration`},
+	"js":         {`function_declaration`, `class_declaration`},
 	"javascript": {`function_declaration`, `class_declaration`},
-	"mjs": {`function_declaration`, `class_declaration`},
-	"cjs": {`function_declaration`, `class_declaration`},
+	"mjs":        {`function_declaration`, `class_declaration`},
+	"cjs":        {`function_declaration`, `class_declaration`},
+	"ts":         {`function_declaration`, `class_declaration`, `interface_declaration`, `type_alias_declaration`},
+	"tsx":        {`function_declaration`, `class_declaration`, `interface_declaration`, `type_alias_declaration`},
+	"typescript": {`function_declaration`, `class_declaration`, `interface_declaration`, `type_alias_declaration`},
+	"css":        {`rule_set`, `at_rule`},
+	"md":         {`atx_heading`, `setext_heading`, `paragraph`, `block_quote`, `fenced_code_block`, `loose_list`, `tight_list`, `table`},
+	"markdown":   {`atx_heading`, `setext_heading`, `paragraph`, `block_quote`, `fenced_code_block`, `loose_list`, `tight_list`, `table`},
+	"yaml":       {`block_mapping_pair`, `block_sequence_item`},
+	"yml":        {`block_mapping_pair`, `block_sequence_item`},
+	"toml":       {`table`, `key_value`},
+	"proto":      {`message_definition`, `service_definition`, `enum_definition`},
+	"protobuf":   {`message_definition`, `service_definition`, `enum_definition`},
+	"json":       {`object`, `array`, `pair`},
 }
 
 // ChunkByAST splits content into chunks using AST boundaries (functions, types, classes).
@@ -133,6 +146,32 @@ func nodeTypeToChunkType(t string) string {
 		return "type"
 	case "class_declaration":
 		return "class"
+	case "block_mapping_pair", "block_sequence_item":
+		return "block"
+	case "key_value":
+		return "section"
+	case "table":
+		return "table"
+	case "message_definition", "service_definition", "enum_definition":
+		return "definition"
+	case "object", "array":
+		return "block"
+	case "pair":
+		return "pair"
+	case "interface_declaration", "type_alias_declaration":
+		return "definition"
+	case "rule_set":
+		return "rule"
+	case "at_rule":
+		return "at_rule"
+	case "atx_heading", "setext_heading":
+		return "heading"
+	case "paragraph":
+		return "paragraph"
+	case "block_quote", "fenced_code_block":
+		return "block"
+	case "loose_list", "tight_list":
+		return "list"
 	default:
 		return t
 	}

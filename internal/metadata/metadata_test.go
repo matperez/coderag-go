@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEnsure_createsFileWhenMissing(t *testing.T) {
@@ -59,6 +60,8 @@ func TestEnsure_updatesOnlyLastAccessedAtWhenFileExists(t *testing.T) {
 	if err := json.Unmarshal(data, &first); err != nil {
 		t.Fatalf("Unmarshal error = %v", err)
 	}
+	// Ensure second call gets a different LastAccessedAt (format has millisecond precision)
+	time.Sleep(2 * time.Millisecond)
 
 	err = Ensure(dir, rootPath)
 	if err != nil {
