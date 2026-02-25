@@ -12,9 +12,11 @@ import (
 
 	"github.com/matperez/coderag-go/internal/astchunk"
 	"github.com/matperez/coderag-go/internal/chunk"
+	"github.com/matperez/coderag-go/internal/embeddings"
 	"github.com/matperez/coderag-go/internal/scan"
 	"github.com/matperez/coderag-go/internal/storage"
 	"github.com/matperez/coderag-go/internal/tokenizer"
+	"github.com/matperez/coderag-go/internal/vectorstore"
 	"github.com/matperez/coderag-go/internal/watcher"
 )
 
@@ -29,6 +31,8 @@ type Indexer struct {
 	maxChunk      int
 	watch         bool
 	skipUnchanged bool // if true, skip re-indexing files with same hash (and mtime within 1s)
+	embedder      embeddings.Provider
+	vecStore      vectorstore.Store
 	status        IndexStatus
 }
 
@@ -51,6 +55,8 @@ type Config struct {
 	MaxChunkSize  int
 	Watch         bool  // if true, after indexing run watcher until context is cancelled
 	SkipUnchanged *bool // if true or nil, skip re-indexing when hash (and mtime) unchanged; set to false to force full re-index
+	Embedder      embeddings.Provider // optional: when set with VecStore, index chunk embeddings
+	VecStore      vectorstore.Store   // optional: when set with Embedder, write embeddings here
 }
 
 // New creates an indexer.
@@ -70,6 +76,8 @@ func New(cfg Config) *Indexer {
 		maxChunk:      cfg.MaxChunkSize,
 		watch:         cfg.Watch,
 		skipUnchanged: skipUnchanged,
+		embedder:      cfg.Embedder,
+		vecStore:      cfg.VecStore,
 	}
 }
 
@@ -91,6 +99,12 @@ func (x *Indexer) GetStatus() IndexStatus {
 func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.Op) error {
 	slog.Info("file event", "path", relPath, "op", op)
 	if op == watcher.Remove {
+		if x.vecStore != nil {
+			chunkIDs, _ := x.storage.ListChunkIDsByFile(relPath)
+			for _, cid := range chunkIDs {
+				_ = x.vecStore.DeleteChunk(ctx, cid)
+			}
+		}
 		err := x.storage.DeleteFile(relPath)
 		if err != nil {
 			slog.Warn("event failed", "path", relPath, "op", op, "error", err)
@@ -223,6 +237,26 @@ func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.O
 		}
 		_ = x.storage.StoreChunkVectors(cid, rows)
 	}
+	if x.embedder != nil && x.vecStore != nil {
+		contents := make([]string, len(chunkDatas))
+		for i, cd := range chunkDatas {
+			contents[i] = cd.content
+		}
+		vecs, err := x.embedder.GenerateEmbeddings(ctx, contents)
+		if err != nil {
+			slog.Warn("embedding failed", "path", relPath, "error", err)
+			return nil
+		}
+		rows := make([]vectorstore.Row, 0, len(vecs))
+		for j, vec := range vecs {
+			rows = append(rows, vectorstore.Row{
+				ID: chunkIDs[j], Vector: vec, Metadata: "",
+			})
+		}
+		if err := x.vecStore.Upsert(ctx, rows); err != nil {
+			slog.Warn("vector store upsert failed", "path", relPath, "error", err)
+		}
+	}
 	return nil
 }
 
@@ -255,6 +289,12 @@ func (x *Indexer) Index(ctx context.Context) error {
 	var deleted int
 	for _, p := range storedPaths {
 		if _, ok := currentPaths[p]; !ok {
+			if x.vecStore != nil {
+				chunkIDs, _ := x.storage.ListChunkIDsByFile(p)
+				for _, cid := range chunkIDs {
+					_ = x.vecStore.DeleteChunk(ctx, cid)
+				}
+			}
 			if err := x.storage.DeleteFile(p); err != nil {
 				slog.Warn("delete file from index", "path", p, "error", err)
 				continue
@@ -364,6 +404,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 		return nil
 	}
 	// Compute global IDF: merge existing storage doc freqs with this run's fileChunks
+	slog.Info("computing IDF started")
 	var allFreqs []map[string]int
 	for _, chunks := range fileChunks {
 		for _, cd := range chunks {
@@ -398,7 +439,15 @@ func (x *Indexer) Index(ctx context.Context) error {
 		dfAfter := dfBefore[t] + docFreqNew[t]
 		idf[t] = math.Log((NAfter+1)/float64(dfAfter+1)) + 1
 	}
+	slog.Info("computing IDF done", "terms", len(terms), "chunks", len(allFreqs))
+	var embedIDs []int64
+	var embedContents []string
 	// Pass 2: store chunks with magnitude/tokenCount and vectors
+	numChunksToStore := 0
+	for _, chks := range fileChunks {
+		numChunksToStore += len(chks)
+	}
+	slog.Info("storing chunks and BM25 vectors started", "files", len(fileChunks), "chunks", numChunksToStore)
 	for path, chunks := range fileChunks {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -453,6 +502,39 @@ func (x *Indexer) Index(ctx context.Context) error {
 			}
 			_ = x.storage.StoreChunkVectors(cid, rows)
 		}
+		if x.embedder != nil && x.vecStore != nil {
+			for i, cid := range chunkIDs {
+				embedIDs = append(embedIDs, cid)
+				embedContents = append(embedContents, chunks[i].content)
+			}
+		}
+	}
+	slog.Info("storing chunks and BM25 vectors done")
+	if x.embedder != nil && x.vecStore != nil && len(embedIDs) > 0 {
+		slog.Info("generating and writing embeddings started", "chunks", len(embedIDs))
+		const embedBatch = 20
+		for i := 0; i < len(embedContents); i += embedBatch {
+			end := i + embedBatch
+			if end > len(embedContents) {
+				end = len(embedContents)
+			}
+			batchContents := embedContents[i:end]
+			vecs, err := x.embedder.GenerateEmbeddings(ctx, batchContents)
+			if err != nil {
+				slog.Warn("embedding batch failed", "error", err)
+				continue
+			}
+			rows := make([]vectorstore.Row, 0, len(vecs))
+			for j, vec := range vecs {
+				rows = append(rows, vectorstore.Row{
+					ID: embedIDs[i+j], Vector: vec, Metadata: "",
+				})
+			}
+			if err := x.vecStore.Upsert(ctx, rows); err != nil {
+				slog.Warn("vector store upsert failed", "error", err)
+			}
+		}
+		slog.Info("generating and writing embeddings done")
 	}
 	x.status.Progress = 100
 	fc, _ := x.storage.FileCount()

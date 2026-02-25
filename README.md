@@ -8,13 +8,35 @@ Inspired by [SylphxAI/coderag](https://github.com/SylphxAI/coderag) (lightning-f
 
 **Requirements:** Go 1.25+
 
+The default build includes LanceDB for optional vector search. Embeddings are enabled at runtime when the relevant environment variables are set; without them, only BM25 search is used.
+
 ```bash
-# Clone and build
+# Clone and build (with LanceDB for hybrid search)
 git clone https://github.com/matperez/coderag-go.git && cd coderag-go
-go build -o coderag-mcp ./cmd/coderag-mcp
-# or install to $GOPATH/bin
-go install ./cmd/coderag-mcp
+# One-time: download native LanceDB libraries (required for build with embeddings)
+make download-lancedb
+# Build with embeddings (Makefile sets CGO_LDFLAGS automatically)
+make build
+# Or build without embeddings (BM25 only, no CGO)
+make build-no-embeddings
 ```
+
+**Embeddings (optional):** To enable hybrid BM25 + vector search, set environment variables for an OpenAI-compatible API. At startup the binary will create an embedding provider and vector store; indexing will then write chunk embeddings to LanceDB and `codebase_search` will use hybrid ranking.
+
+- `OPENAI_API_KEY` — API key (can be any value for local servers, e.g. `ollama`)
+- `OPENAI_BASE_URL` — API base URL (default: `https://api.openai.com/v1`)
+- `EMBEDDING_MODEL` or `OPENAI_EMBEDDING_MODEL` — model name (default: `text-embedding-3-small`)
+
+Example for local Ollama:
+
+```bash
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+export OPENAI_API_KEY="ollama"
+export EMBEDDING_MODEL="nomic-embed-text-v2-moe"
+./coderag-mcp --root /path/to/project
+```
+
+If the embedding API is unreachable or the vector store cannot be opened, the app logs a warning and runs in BM25-only mode.
 
 **Flags:**
 
@@ -23,7 +45,7 @@ go install ./cmd/coderag-mcp
 - `--max-size` — max file size in bytes (0 = no limit)
 - `--log-level` — log level: `debug`, `info`, `warn`, `error` (default: from `CODERAG_LOG` or `info`)
 
-**Logging:** output goes to stderr (text format). The `CODERAG_LOG` environment variable sets the level when the flag is not used (`debug`, `info`, `warn`, `error`). Logged: startup (root, data_dir), indexing progress (every 10 files and on completion), tool calls (codebase_search, codebase_index_status), search errors, and skipped files.
+**Logging:** output goes to stderr (text format). The `CODERAG_LOG` environment variable sets the level when the flag is not used (`debug`, `info`, `warn`, `error`). Logged: startup (root, data_dir); indexing progress (every 10 files and on completion); after all files are processed — IDF computation, storing chunks and BM25 vectors, and (when embeddings are enabled) generating and writing embeddings; then `indexing done`; tool calls (codebase_search, codebase_index_status); search errors; skipped files.
 
 **Examples:**
 
@@ -66,7 +88,7 @@ Same idea: set `command` (path to `coderag-mcp`) and `args: ["--root", "<project
 
 ## MCP tools
 
-- **codebase_search** — search the codebase (BM25): `query`, `limit`, `file_extensions`, `path_filter`, `exclude_paths`, `include_content`. Response as markdown with paths and optional snippets.
+- **codebase_search** — search the codebase (BM25, or BM25 + vector when embeddings are enabled): `query`, `limit`, `file_extensions`, `path_filter`, `exclude_paths`, `include_content`. Response as markdown with paths and optional snippets.
 - **codebase_index_status** — index status: `is_indexing`, `progress`, file and chunk counts; when indexing, `current_file` is included.
 
 ## Documentation
@@ -77,7 +99,9 @@ Same idea: set `command` (path to `coderag-mcp`) and `args: ["--root", "<project
 ## Build and tests
 
 ```bash
-make build   # or go build ./...
+make build   # go build -tags lancedb -o coderag-mcp ./cmd/coderag-mcp
 make test    # go test ./...
 make lint    # golangci-lint run
 ```
+
+To build without LanceDB (BM25-only, no vector store), run `go build ./cmd/coderag-mcp`. The resulting binary will log "vector store requires build with -tags lancedb" if embeddings env vars are set.
