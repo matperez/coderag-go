@@ -5,7 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,26 +19,36 @@ import (
 )
 
 func main() {
+	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default from CODERAG_LOG or info)")
 	root := flag.String("root", ".", "project root to index/search")
 	indexOnly := flag.Bool("index-only", false, "run indexing and exit")
 	maxSize := flag.Int64("max-size", 0, "max file size in bytes (0 = no limit)")
 	flag.Parse()
 
+	level := parseLogLevel(*logLevel)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
 	rootPath, err := filepath.Abs(*root)
 	if err != nil {
-		log.Fatalf("root: %v", err)
+		slog.Error("root resolution failed", "error", err)
+		os.Exit(1)
 	}
 	dataDir, err := datadir.DataDir(rootPath)
 	if err != nil {
-		log.Fatalf("datadir: %v", err)
+		slog.Error("datadir resolution failed", "error", err)
+		os.Exit(1)
 	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("mkdir datadir: %v", err)
+		slog.Error("mkdir datadir failed", "error", err)
+		os.Exit(1)
 	}
+	slog.Info("starting", "root", rootPath, "data_dir", dataDir)
+
 	dbPath := filepath.Join(dataDir, "index.db")
 	st, err := storage.NewSQLiteStorage(dbPath)
 	if err != nil {
-		log.Fatalf("storage: %v", err)
+		slog.Error("storage open failed", "error", err)
+		os.Exit(1)
 	}
 	defer st.Close()
 
@@ -50,10 +60,11 @@ func main() {
 
 	if *indexOnly {
 		if err := idx.Index(context.Background()); err != nil {
-			log.Fatalf("index: %v", err)
+			slog.Error("index failed", "error", err)
+			os.Exit(1)
 		}
 		s := idx.GetStatus()
-		log.Printf("indexed %d files, %d chunks", s.ProcessedFiles, s.IndexedChunks)
+		slog.Info("indexed", "files", s.ProcessedFiles, "chunks", s.IndexedChunks)
 		return
 	}
 
@@ -61,7 +72,25 @@ func main() {
 	registerCodebaseSearch(server, st, rootPath, nil) // optional: pass HybridOpts for BM25+vector
 	registerCodebaseIndexStatus(server, idx)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		log.Fatalf("MCP server: %v", err)
+		slog.Error("MCP server failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func parseLogLevel(flagVal string) slog.Level {
+	s := flagVal
+	if s == "" {
+		s = os.Getenv("CODERAG_LOG")
+	}
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }
 
@@ -83,6 +112,7 @@ func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybr
 		if args.Limit != nil && *args.Limit > 0 {
 			limit = *args.Limit
 		}
+		slog.Info("tool call", "tool", "codebase_search", "query", truncate(args.Query, 80), "limit", limit)
 		tokens := tokenizer.Tokenize(args.Query)
 		if len(tokens) == 0 {
 			return &mcp.CallToolResult{
@@ -91,6 +121,7 @@ func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybr
 		}
 		idf, candidates, err := st.SearchCandidates(tokens)
 		if err != nil {
+			slog.Error("search failed", "err", err)
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil, nil
 		}
 		if len(candidates) == 0 {
@@ -125,11 +156,13 @@ func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybr
 			var err error
 			results, err = search.HybridFromStorage(ctx, args.Query, st, idf, sc, avgLen, limit, hybridOpts)
 			if err != nil {
+				slog.Error("search failed", "err", err)
 				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil, nil
 			}
 		} else {
 			results = search.SearchFromStorage(args.Query, idf, sc, avgLen, limit)
 		}
+		slog.Debug("search done", "results", len(results))
 		md := formatSearchResultsMarkdown(results, args.IncludeContent, root)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: md}},
@@ -142,13 +175,24 @@ func registerCodebaseIndexStatus(s *mcp.Server, idx *indexer.Indexer) {
 		Name:        "codebase_index_status",
 		Description: "Return current indexing status: is_indexing, progress (0-100), file and chunk counts.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, any, error) {
+		slog.Debug("tool call", "tool", "codebase_index_status")
 		st := idx.GetStatus()
 		text := fmt.Sprintf("is_indexing: %v\nprogress: %d\nfiles: %d\nchunks: %d\n",
 			st.IsIndexing, st.Progress, st.ProcessedFiles, st.IndexedChunks)
+		if st.CurrentFile != "" {
+			text += fmt.Sprintf("current_file: %s\n", st.CurrentFile)
+		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		}, nil, nil
 	})
+}
+
+func truncate(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func ptrStr(s *string) string { if s == nil { return "" }; return *s }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -33,11 +34,12 @@ type Indexer struct {
 // IndexStatus is the current indexing status.
 type IndexStatus struct {
 	IsIndexing     bool
-	Progress       int // 0-100 when indexing
+	Progress       int    // 0-100 when indexing
 	TotalFiles     int
 	ProcessedFiles int
 	TotalChunks    int
 	IndexedChunks  int
+	CurrentFile    string // file being indexed (empty when idle)
 }
 
 // Config for the indexer.
@@ -80,8 +82,13 @@ func (x *Indexer) GetStatus() IndexStatus {
 
 // ProcessEvent applies a watcher event (add/change/remove) to the index.
 func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.Op) error {
+	slog.Info("file event", "path", relPath, "op", op)
 	if op == watcher.Remove {
-		return x.storage.DeleteFile(relPath)
+		err := x.storage.DeleteFile(relPath)
+		if err != nil {
+			slog.Warn("event failed", "path", relPath, "op", op, "error", err)
+		}
+		return err
 	}
 	// Add or Change
 	fullPath := filepath.Join(x.root, relPath)
@@ -105,6 +112,7 @@ func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.O
 		Path: relPath, Content: string(content), Hash: hash,
 		Size: size, Mtime: mtime, IndexedAt: nowMillis(),
 	}); err != nil {
+		slog.Warn("event failed", "path", relPath, "op", op, "error", err)
 		return err
 	}
 	ext := filepath.Ext(relPath)
@@ -150,6 +158,7 @@ func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.O
 	}
 	df, err := x.storage.DocFreqs(termList)
 	if err != nil {
+		slog.Warn("event failed", "path", relPath, "op", op, "error", err)
 		return err
 	}
 	idf := make(map[string]float64)
@@ -185,6 +194,7 @@ func (x *Indexer) ProcessEvent(ctx context.Context, relPath string, op watcher.O
 	}
 	chunkIDs, err := x.storage.StoreChunks(relPath, stChunks)
 	if err != nil {
+		slog.Warn("event failed", "path", relPath, "op", op, "error", err)
 		return err
 	}
 	for i, cid := range chunkIDs {
@@ -223,7 +233,9 @@ func (x *Indexer) Index(ctx context.Context) error {
 		return err
 	}
 	x.status.TotalFiles = len(entries)
+	slog.Info("indexing started", "total_files", len(entries))
 	// Pass 1: read files, store files, chunk and collect term freqs
+	total := len(entries)
 	type chunkData struct {
 		content   string
 		chunkType string
@@ -239,24 +251,34 @@ func (x *Indexer) Index(ctx context.Context) error {
 		}
 		content, err := os.ReadFile(e.Path)
 		if err != nil {
+			path, _ := filepath.Rel(x.root, e.Path)
+			if path == "" || path == "." {
+				path = e.Path
+			}
+			slog.Warn("skip file", "path", path, "error", err)
 			continue
 		}
 		path, _ := filepath.Rel(x.root, e.Path)
 		if path == "" || path == "." {
 			path = e.Path
 		}
+		x.status.CurrentFile = path
 		hash := sha256Hex(content)
 		err = x.storage.StoreFile(storage.File{
 			Path: path, Content: string(content), Hash: hash,
 			Size: e.Size, Mtime: e.Mtime, IndexedAt: nowMillis(),
 		})
 		if err != nil {
+			slog.Warn("skip file", "path", path, "error", err)
 			continue
 		}
 		processed++
 		x.status.ProcessedFiles = processed
 		if x.status.TotalFiles > 0 {
 			x.status.Progress = processed * 100 / x.status.TotalFiles
+		}
+		if processed%10 == 0 || processed == total {
+			slog.Info("indexing progress", "processed", processed, "total", total, "progress_pct", x.status.Progress, "current_file", path)
 		}
 		ext := filepath.Ext(path)
 		var chunks []chunk.Chunk
@@ -359,6 +381,8 @@ func (x *Indexer) Index(ctx context.Context) error {
 	cc, _ := x.storage.ChunkCount()
 	x.status.IndexedChunks = cc
 	x.status.ProcessedFiles = fc
+	x.status.CurrentFile = ""
+	slog.Info("indexing done", "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
 
 	if x.watch {
 		w := watcher.New(watcher.Options{

@@ -49,6 +49,22 @@ func TestIndexOnly(t *testing.T) {
 	}
 }
 
+func TestIndexOnlyWithLogLevelError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("package p\nfunc Bar() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "coderag-mcp-log")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin, "-log-level=error", "-index-only", "-root", dir)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run with log-level=error: %v\n%s", err, out)
+	}
+}
+
 func TestMCPCodebaseSearch(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "hello.go"), []byte("package main\nfunc HelloWorld() {}\n"), 0644); err != nil {

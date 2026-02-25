@@ -19,6 +19,9 @@ go install ./cmd/coderag-mcp
 - `--root` — корень проекта для индексации и поиска (по умолчанию `.`)
 - `--index-only` — выполнить индексацию и выйти (без запуска MCP)
 - `--max-size` — максимальный размер файла в байтах (0 = без ограничения)
+- `--log-level` — уровень логов: `debug`, `info`, `warn`, `error` (по умолчанию берётся из `CODERAG_LOG` или `info`)
+
+**Логирование:** вывод идёт в stderr (текстовый формат). Переменная окружения `CODERAG_LOG` задаёт уровень без флага (`debug`, `info`, `warn`, `error`). Логируются старт (root, data_dir), прогресс индексации (каждые 10 файлов и по завершении), вызовы инструментов (codebase_search, codebase_index_status), ошибки поиска и пропуск файлов.
 
 **Примеры:**
 
@@ -62,7 +65,7 @@ go install ./cmd/coderag-mcp
 ## Инструменты MCP
 
 - **codebase_search** — поиск по кодовой базе (BM25): `query`, `limit`, `file_extensions`, `path_filter`, `exclude_paths`, `include_content`. Ответ в виде markdown с путями и опционально сниппетами.
-- **codebase_index_status** — статус индекса: `is_indexing`, `progress`, количество файлов и чанков.
+- **codebase_index_status** — статус индекса: `is_indexing`, `progress`, количество файлов и чанков, при индексации — `current_file`.
 
 ## Документация
 
