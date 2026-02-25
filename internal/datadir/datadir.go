@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	dirName   = ".coderag-go"
-	projects  = "projects"
-	hashLen   = 16
+	dirName  = ".coderag-go"
+	projects = "projects"
+	hashLen  = 16
 )
 
 // DataDir returns the project-specific data directory under ~/.coderag-go/projects/<hash>/.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/matperez/coderag-go/internal/datadir"
@@ -66,5 +67,63 @@ func TestIndexer_Index_e2e(t *testing.T) {
 	results := search.SearchFromStorage("foo", idf, sc, avgLen, 10)
 	if len(results) == 0 {
 		t.Error("expected search result for 'foo'")
+	}
+}
+
+func TestIndexer_GetStatus_afterIndex(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "x.go"), []byte("package p\n"), 0644)
+	dataDir, _ := datadir.DataDir(dir)
+	st, _ := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	defer st.Close()
+	idx := New(Config{Storage: st, Root: dir})
+	_ = idx.Index(context.Background())
+	s := idx.GetStatus()
+	if s.IsIndexing {
+		t.Error("expected not indexing after Index()")
+	}
+	if s.ProcessedFiles != 1 || s.IndexedChunks < 1 {
+		t.Errorf("GetStatus after index: ProcessedFiles=%d IndexedChunks=%d", s.ProcessedFiles, s.IndexedChunks)
+	}
+}
+
+func TestIndexer_GetStatus_duringIndex(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		os.WriteFile(filepath.Join(dir, "f"+strconv.Itoa(i)+".go"), []byte("package p\n"), 0644)
+	}
+	dataDir, _ := datadir.DataDir(dir)
+	st, _ := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	defer st.Close()
+	idx := New(Config{Storage: st, Root: dir})
+	done := make(chan struct{})
+	go func() {
+		_ = idx.Index(context.Background())
+		close(done)
+	}()
+	var sawProgress bool
+	for i := 0; i < 50; i++ {
+		s := idx.GetStatus()
+		if s.IsIndexing && s.Progress > 0 {
+			sawProgress = true
+			break
+		}
+		select {
+		case <-done:
+			break
+		default:
+			// small yield
+		}
+	}
+	<-done
+	s := idx.GetStatus()
+	if s.IsIndexing {
+		t.Error("still indexing after done")
+	}
+	if s.ProcessedFiles != 5 {
+		t.Errorf("ProcessedFiles = %d", s.ProcessedFiles)
+	}
+	if !sawProgress {
+		t.Log("note: did not observe progress during indexing (timing)")
 	}
 }

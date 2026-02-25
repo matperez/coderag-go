@@ -18,9 +18,9 @@ type FileEntry struct {
 
 // Options configures the scanner.
 type Options struct {
-	MaxFileSize int64    // skip files larger than this (0 = no limit)
-	Extensions  []string // if non-nil, only include these extensions (e.g. ".go", ".ts")
-	UseGitignore bool    // if true, load and respect .gitignore from root
+	MaxFileSize  int64    // skip files larger than this (0 = no limit)
+	Extensions   []string // if non-nil, only include these extensions (e.g. ".go", ".ts")
+	UseGitignore bool     // if true, load and respect .gitignore from root
 }
 
 // Scan walks root and returns file entries, respecting gitignore and options.

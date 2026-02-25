@@ -14,10 +14,10 @@ const (
 
 // DocumentVector holds term weights and magnitude for one document (chunk).
 type DocumentVector struct {
-	URI       string
-	Terms     map[string]float64 // term -> TF-IDF (for display) or used in scoring
-	RawTerms  map[string]int     // term -> raw frequency (for BM25)
-	Magnitude float64
+	URI        string
+	Terms      map[string]float64 // term -> TF-IDF (for display) or used in scoring
+	RawTerms   map[string]int     // term -> raw frequency (for BM25)
+	Magnitude  float64
 	TokenCount int
 }
 
@@ -35,8 +35,8 @@ type SearchIndex struct {
 
 // Result is a single search result.
 type Result struct {
-	URI         string
-	Score       float64
+	URI          string
+	Score        float64
 	MatchedTerms []string
 }
 
@@ -143,9 +143,9 @@ func Search(query string, index *SearchIndex, limit int) []Result {
 		avgLen = 1
 	}
 	type scored struct {
-		uri    string
-		score  float64
-		terms  []string
+		uri   string
+		score float64
+		terms []string
 	}
 	var results []scored
 	for _, doc := range index.Documents {

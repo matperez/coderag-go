@@ -83,4 +83,3 @@ func TestDataDir_stableHash(t *testing.T) {
 		t.Errorf("different paths gave same dir: %q", got1)
 	}
 }
-

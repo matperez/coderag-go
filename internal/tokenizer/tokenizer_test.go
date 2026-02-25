@@ -33,10 +33,10 @@ func TestTokenize(t *testing.T) {
 			want: []string{"получить", "пользователя"},
 		},
 		{
-			name: "mixed code and comment",
-			text: "// получить пользователя\nfunc getUserById(id string)",
+			name:  "mixed code and comment",
+			text:  "// получить пользователя\nfunc getUserById(id string)",
 			slice: true,
-			want: []string{"получить", "пользователя", "func", "get", "user", "by", "id"},
+			want:  []string{"получить", "пользователя", "func", "get", "user", "by", "id"},
 		},
 		{
 			name: "single short dropped",

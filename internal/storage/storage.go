@@ -14,11 +14,11 @@ type File struct {
 // Chunk represents a chunk of a file (for storage).
 type Chunk struct {
 	Content    string
-	Type      string
-	StartLine int
-	EndLine   int
-	Metadata  string // JSON, optional
-	TokenCount int   // for BM25 length normalization
+	Type       string
+	StartLine  int
+	EndLine    int
+	Metadata   string  // JSON, optional
+	TokenCount int     // for BM25 length normalization
 	Magnitude  float64 // pre-computed TF-IDF magnitude
 }
 

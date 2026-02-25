@@ -24,13 +24,24 @@ type Indexer struct {
 	root     string
 	maxSize  int64
 	maxChunk int
+	status   IndexStatus
+}
+
+// IndexStatus is the current indexing status.
+type IndexStatus struct {
+	IsIndexing     bool
+	Progress       int // 0-100 when indexing
+	TotalFiles     int
+	ProcessedFiles int
+	TotalChunks    int
+	IndexedChunks  int
 }
 
 // Config for the indexer.
 type Config struct {
-	Storage    storage.Storage
-	Root       string
-	MaxFileSize int64
+	Storage      storage.Storage
+	Root         string
+	MaxFileSize  int64
 	MaxChunkSize int
 }
 
@@ -41,15 +52,33 @@ func New(cfg Config) *Indexer {
 	}
 	return &Indexer{
 		storage:  cfg.Storage,
-		tok:     tokenizer.New(),
-		root:    cfg.Root,
-		maxSize: cfg.MaxFileSize,
+		tok:      tokenizer.New(),
+		root:     cfg.Root,
+		maxSize:  cfg.MaxFileSize,
 		maxChunk: cfg.MaxChunkSize,
 	}
 }
 
+// GetStatus returns the current index status (progress when indexing, counts from storage when idle).
+func (x *Indexer) GetStatus() IndexStatus {
+	s := x.status
+	if !s.IsIndexing {
+		fc, _ := x.storage.FileCount()
+		cc, _ := x.storage.ChunkCount()
+		s.IndexedChunks = cc
+		s.ProcessedFiles = fc
+		s.TotalFiles = fc
+		s.TotalChunks = cc
+	}
+	return s
+}
+
 // Index scans root, chunks files, and stores them with TF-IDF vectors.
 func (x *Indexer) Index(ctx context.Context) error {
+	x.status.IsIndexing = true
+	x.status.Progress = 0
+	defer func() { x.status.IsIndexing = false }()
+
 	entries, err := scan.Scan(x.root, scan.Options{
 		MaxFileSize:  x.maxSize,
 		UseGitignore: true,
@@ -57,6 +86,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	x.status.TotalFiles = len(entries)
 	// Pass 1: read files, store files, chunk and collect term freqs
 	type chunkData struct {
 		content   string
@@ -66,6 +96,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 		termFreq  map[string]int
 	}
 	fileChunks := make(map[string][]chunkData)
+	processed := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -85,6 +116,11 @@ func (x *Indexer) Index(ctx context.Context) error {
 		})
 		if err != nil {
 			continue
+		}
+		processed++
+		x.status.ProcessedFiles = processed
+		if x.status.TotalFiles > 0 {
+			x.status.Progress = processed * 100 / x.status.TotalFiles
 		}
 		chunks := chunk.ChunkByCharacters(string(content), x.maxChunk)
 		for _, c := range chunks {
@@ -176,6 +212,11 @@ func (x *Indexer) Index(ctx context.Context) error {
 			_ = x.storage.StoreChunkVectors(cid, rows)
 		}
 	}
+	x.status.Progress = 100
+	fc, _ := x.storage.FileCount()
+	cc, _ := x.storage.ChunkCount()
+	x.status.IndexedChunks = cc
+	x.status.ProcessedFiles = fc
 	return nil
 }
 
