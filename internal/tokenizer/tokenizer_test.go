@@ -2,6 +2,7 @@ package tokenizer
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,44 @@ func TestTokenizer_WithRussianStemmer(t *testing.T) {
 	}
 	if got[1] != "получ" {
 		t.Errorf("second token = %q, want получ", got[1])
+	}
+}
+
+func BenchmarkTokenize(b *testing.B) {
+	tok := New()
+	text := "getUserById"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tok.Tokenize(text)
+	}
+}
+
+func BenchmarkTokenize_code(b *testing.B) {
+	tok := New()
+	text := `// getUserById returns user by id
+func getUserById(id string) (*User, error) {
+	if id == "" {
+		return nil, errors.New("id required")
+	}
+	return userRepository.FindByID(ctx, id)
+}`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tok.Tokenize(text)
+	}
+}
+
+func BenchmarkTokenize_long(b *testing.B) {
+	tok := New()
+	line := "func getUserById(id string) { return userRepo.Find(id) }\n"
+	const targetLen = 16 * 1024
+	var bld strings.Builder
+	for bld.Len() < targetLen {
+		bld.WriteString(line)
+	}
+	text := bld.String()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tok.Tokenize(text)
 	}
 }

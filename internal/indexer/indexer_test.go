@@ -563,3 +563,38 @@ func TestIndexer_Index_deletedFilesRemoved_vecStore(t *testing.T) {
 		}
 	}
 }
+
+const benchmarkFileCount = 200
+
+func BenchmarkIndexer_Index(b *testing.B) {
+	baseDir := b.TempDir()
+	rootDir := filepath.Join(baseDir, "src")
+	if err := os.MkdirAll(rootDir, 0755); err != nil {
+		b.Fatal(err)
+	}
+	content := []byte("package p\nfunc F() {}\n")
+	for i := 0; i < benchmarkFileCount; i++ {
+		p := filepath.Join(rootDir, "f"+strconv.Itoa(i)+".go")
+		if err := os.WriteFile(p, content, 0644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dbPath := filepath.Join(baseDir, "db", strconv.Itoa(i), "index.db")
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+			b.Fatal(err)
+		}
+		st, err := storage.NewSQLiteStorage(dbPath)
+		if err != nil {
+			b.Fatal(err)
+		}
+		idx := New(Config{Storage: st, Root: rootDir})
+		if err := idx.Index(ctx); err != nil {
+			st.Close()
+			b.Fatal(err)
+		}
+		st.Close()
+	}
+}
