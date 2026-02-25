@@ -87,3 +87,19 @@ func TestTokenize_unicodeWordBoundaries(t *testing.T) {
 		t.Errorf("Tokenize() = %v, want %v", got, want)
 	}
 }
+
+func TestTokenizer_WithRussianStemmer(t *testing.T) {
+	z := NewWithStemmer(RussianStemmer)
+	got := z.Tokenize("пользователя получить")
+	// Snowball Russian stems: пользователя -> пользовател, получить -> получ
+	if len(got) < 2 {
+		t.Errorf("Tokenize with Russian stemmer = %v, want at least 2 tokens", got)
+	}
+	// Both forms should normalize to same stem so "пользователя" and "пользователь" match
+	if got[0] != "пользовател" && got[0] != "пользователь" {
+		t.Errorf("first token = %q, want stem of пользователя", got[0])
+	}
+	if got[1] != "получ" {
+		t.Errorf("second token = %q, want получ", got[1])
+	}
+}
