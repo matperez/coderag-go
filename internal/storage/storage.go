@@ -45,6 +45,18 @@ type Storage interface {
 	DocFreqs(terms []string) (map[string]int, error)
 	// Search support: load chunks that contain any of the given terms.
 	SearchCandidates(terms []string) (idf map[string]float64, candidates []SearchCandidate, err error)
+	// GetChunk returns path, content, and line range for a chunk by ID. Returns nil if not found.
+	GetChunk(chunkID int64) (*ChunkInfo, error)
+	// ListChunkIDsByFile returns chunk IDs for the given file path (for vector store cleanup).
+	ListChunkIDsByFile(path string) ([]int64, error)
+}
+
+// ChunkInfo is the minimal chunk data for search result resolution.
+type ChunkInfo struct {
+	Path      string
+	Content   string
+	StartLine int
+	EndLine   int
 }
 
 // SearchCandidate is a chunk with its term vectors for BM25 scoring.

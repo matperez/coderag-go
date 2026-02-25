@@ -203,3 +203,60 @@ func TestSQLiteStorage_DocFreqs(t *testing.T) {
 		t.Errorf("DocFreqs: %v", df)
 	}
 }
+
+func TestSQLiteStorage_GetChunk(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "getchunk.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "f.go", Content: "x", Hash: "h", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.StoreChunks("f.go", []Chunk{{Content: "chunk content", Type: "func", StartLine: 10, EndLine: 20}})
+	if err != nil || len(ids) != 1 {
+		t.Fatal(err)
+	}
+	ci, err := s.GetChunk(ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ci == nil || ci.Path != "f.go" || ci.Content != "chunk content" || ci.StartLine != 10 || ci.EndLine != 20 {
+		t.Errorf("GetChunk: %+v", ci)
+	}
+	if got, _ := s.GetChunk(99999); got != nil {
+		t.Error("GetChunk(99999) should return nil")
+	}
+}
+
+func TestSQLiteStorage_ListChunkIDsByFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "listchunk.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "a.go", Content: "a", Hash: "1", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.StoreChunks("a.go", []Chunk{
+		{Content: "c1", Type: "text", StartLine: 1, EndLine: 1},
+		{Content: "c2", Type: "text", StartLine: 2, EndLine: 2},
+	})
+	if err != nil || len(ids) != 2 {
+		t.Fatal(err)
+	}
+	list, err := s.ListChunkIDsByFile("a.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Errorf("ListChunkIDsByFile: got %v", list)
+	}
+	if list2, _ := s.ListChunkIDsByFile("missing.go"); len(list2) != 0 {
+		t.Errorf("ListChunkIDsByFile(missing): got %v", list2)
+	}
+}

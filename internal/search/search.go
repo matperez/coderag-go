@@ -41,6 +41,7 @@ type Result struct {
 	Content      string
 	StartLine    int
 	EndLine      int
+	ChunkID      int64 // for hybrid fusion
 }
 
 // BuildIndex builds a search index from documents (uri, content). Uses tokenizer for term extraction.
@@ -206,6 +207,7 @@ type TermScore struct {
 
 // StorageCandidate is one chunk's data for low-memory BM25 (from storage.SearchCandidates).
 type StorageCandidate struct {
+	ChunkID    int64
 	FilePath   string
 	Content    string
 	StartLine  int
@@ -247,6 +249,7 @@ func SearchFromStorage(
 		content   string
 		startLine int
 		endLine   int
+		chunkID   int64
 	}
 	var results []scored
 	for _, c := range candidates {
@@ -273,7 +276,7 @@ func SearchFromStorage(
 			score += idfVal * (num / denom)
 		}
 		results = append(results, scored{
-			"file://" + c.FilePath, score, matched, c.Content, c.StartLine, c.EndLine,
+			"file://" + c.FilePath, score, matched, c.Content, c.StartLine, c.EndLine, c.ChunkID,
 		})
 	}
 	for i := 0; i < len(results); i++ {
@@ -291,7 +294,7 @@ func SearchFromStorage(
 		r := results[i]
 		out[i] = Result{
 			URI: r.uri, Score: r.score, MatchedTerms: r.terms,
-			Content: r.content, StartLine: r.startLine, EndLine: r.endLine,
+			Content: r.content, StartLine: r.startLine, EndLine: r.endLine, ChunkID: r.chunkID,
 		}
 	}
 	return out

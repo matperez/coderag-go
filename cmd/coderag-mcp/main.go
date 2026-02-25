@@ -58,7 +58,7 @@ func main() {
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "coderag-go", Version: "0.1.0"}, nil)
-	registerCodebaseSearch(server, st, rootPath)
+	registerCodebaseSearch(server, st, rootPath, nil) // optional: pass HybridOpts for BM25+vector
 	registerCodebaseIndexStatus(server, idx)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("MCP server: %v", err)
@@ -74,10 +74,10 @@ type codebaseSearchArgs struct {
 	IncludeContent bool     `json:"include_content" jsonschema:"Include snippet content in results"`
 }
 
-func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string) {
+func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybridOpts *search.HybridOpts) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "codebase_search",
-		Description: "Search the codebase by natural language or keywords using BM25. Returns file paths and optional snippets.",
+		Description: "Search the codebase by natural language or keywords using BM25 (and optional vector search). Returns file paths and optional snippets.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args codebaseSearchArgs) (*mcp.CallToolResult, any, error) {
 		limit := 10
 		if args.Limit != nil && *args.Limit > 0 {
@@ -109,7 +109,7 @@ func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string) {
 				terms[k] = search.TermScore{TF: v.TF, TFIDF: v.TFIDF, RawFreq: v.RawFreq}
 			}
 			sc = append(sc, search.StorageCandidate{
-				FilePath: c.FilePath, Content: c.Content, StartLine: c.StartLine, EndLine: c.EndLine,
+				ChunkID: c.ChunkID, FilePath: c.FilePath, Content: c.Content, StartLine: c.StartLine, EndLine: c.EndLine,
 				TokenCount: c.TokenCount, Terms: terms,
 			})
 			avgLen += float64(c.TokenCount)
@@ -120,7 +120,16 @@ func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string) {
 			}, nil, nil
 		}
 		avgLen /= float64(len(sc))
-		results := search.SearchFromStorage(args.Query, idf, sc, avgLen, limit)
+		var results []search.Result
+		if hybridOpts != nil {
+			var err error
+			results, err = search.HybridFromStorage(ctx, args.Query, st, idf, sc, avgLen, limit, hybridOpts)
+			if err != nil {
+				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil, nil
+			}
+		} else {
+			results = search.SearchFromStorage(args.Query, idf, sc, avgLen, limit)
+		}
 		md := formatSearchResultsMarkdown(results, args.IncludeContent, root)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: md}},

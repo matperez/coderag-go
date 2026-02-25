@@ -324,6 +324,43 @@ func (s *SQLiteStorage) SearchCandidates(terms []string) (map[string]float64, []
 	return idf, candidates, nil
 }
 
+// GetChunk returns chunk path, content, and line range by chunk ID.
+func (s *SQLiteStorage) GetChunk(chunkID int64) (*ChunkInfo, error) {
+	var c ChunkInfo
+	err := s.db.QueryRow(`
+		SELECT f.path, c.content, c.start_line, c.end_line FROM chunks c
+		JOIN files f ON f.id = c.file_id WHERE c.id = ?
+	`, chunkID).Scan(&c.Path, &c.Content, &c.StartLine, &c.EndLine)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ListChunkIDsByFile returns all chunk IDs for the given file path.
+func (s *SQLiteStorage) ListChunkIDsByFile(path string) ([]int64, error) {
+	rows, err := s.db.Query(
+		"SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.path = ?",
+		path,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func nullString(s string) interface{} {
 	if s == "" {
 		return nil
