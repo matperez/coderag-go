@@ -26,6 +26,7 @@ type Indexer struct {
 	root     string
 	maxSize  int64
 	maxChunk int
+	watch    bool
 	status   IndexStatus
 }
 
@@ -45,6 +46,7 @@ type Config struct {
 	Root         string
 	MaxFileSize  int64
 	MaxChunkSize int
+	Watch        bool // if true, after indexing run watcher until context is cancelled
 }
 
 // New creates an indexer.
@@ -58,6 +60,7 @@ func New(cfg Config) *Indexer {
 		root:     cfg.Root,
 		maxSize:  cfg.MaxFileSize,
 		maxChunk: cfg.MaxChunkSize,
+		watch:    cfg.Watch,
 	}
 }
 
@@ -356,6 +359,29 @@ func (x *Indexer) Index(ctx context.Context) error {
 	cc, _ := x.storage.ChunkCount()
 	x.status.IndexedChunks = cc
 	x.status.ProcessedFiles = fc
+
+	if x.watch {
+		w := watcher.New(watcher.Options{
+			Root:         x.root,
+			UseGitignore: true,
+			Debounce:     150 * time.Millisecond,
+		})
+		if err := w.Start(); err != nil {
+			return err
+		}
+		defer w.Close()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case e, ok := <-w.Events():
+				if !ok {
+					return nil
+				}
+				_ = x.ProcessEvent(ctx, e.Path, e.Op)
+			}
+		}
+	}
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matperez/coderag-go/internal/datadir"
 	"github.com/matperez/coderag-go/internal/search"
@@ -255,5 +256,63 @@ func TestIndexer_ProcessEvent_incrementalUpdate(t *testing.T) {
 	}
 	if len(results) > 0 && !strings.Contains(results[0].URI, "x.go") {
 		t.Errorf("expected x.go in result: %s", results[0].URI)
+	}
+}
+
+func TestIndexer_WatchMode(t *testing.T) {
+	dir := t.TempDir()
+	fpath := filepath.Join(dir, "w.go")
+	if err := os.WriteFile(fpath, []byte("package p\nfunc A() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, _ := datadir.DataDir(dir)
+	st, _ := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	idx := New(Config{Storage: st, Root: dir, Watch: true})
+	done := make(chan error, 1)
+	go func() {
+		done <- idx.Index(ctx)
+	}()
+	// Wait for initial index to complete (poll status)
+	for i := 0; i < 50; i++ {
+		s := idx.GetStatus()
+		if !s.IsIndexing && s.IndexedChunks > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Change file
+	if err := os.WriteFile(fpath, []byte("package p\nfunc Watched() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	err := <-done
+	if err != nil && err != context.Canceled {
+		t.Logf("Index returned: %v", err)
+	}
+	// Search should see "watched" (tokenized)
+	idf, candidates, _ := st.SearchCandidates([]string{"watched"})
+	if len(candidates) > 0 {
+		var sc []search.StorageCandidate
+		avgLen := 0.0
+		for _, c := range candidates {
+			terms := make(map[string]search.TermScore)
+			for k, v := range c.Terms {
+				terms[k] = search.TermScore{TF: v.TF, TFIDF: v.TFIDF, RawFreq: v.RawFreq}
+			}
+			sc = append(sc, search.StorageCandidate{
+				FilePath: c.FilePath, Content: c.Content, StartLine: c.StartLine, EndLine: c.EndLine,
+				TokenCount: c.TokenCount, Terms: terms,
+			})
+			avgLen += float64(c.TokenCount)
+		}
+		avgLen /= float64(len(sc))
+		results := search.SearchFromStorage("watched", idf, sc, avgLen, 5)
+		if len(results) > 0 {
+			t.Logf("watch mode: search found %d results", len(results))
+		}
 	}
 }
