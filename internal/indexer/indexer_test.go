@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,44 @@ import (
 	"github.com/matperez/coderag-go/internal/storage"
 	"github.com/matperez/coderag-go/internal/watcher"
 )
+
+// countingStorage wraps a Storage and counts StoreFile, StoreChunks, DeleteFile calls.
+type countingStorage struct {
+	storage.Storage
+	storeFileCalls   int
+	storeChunksCalls int
+	deleteFileCalls  []string
+	mu                sync.Mutex
+}
+
+func (c *countingStorage) StoreFile(f storage.File) error {
+	c.mu.Lock()
+	c.storeFileCalls++
+	c.mu.Unlock()
+	return c.Storage.StoreFile(f)
+}
+
+func (c *countingStorage) StoreChunks(filePath string, chunks []storage.Chunk) ([]int64, error) {
+	c.mu.Lock()
+	c.storeChunksCalls++
+	c.mu.Unlock()
+	return c.Storage.StoreChunks(filePath, chunks)
+}
+
+func (c *countingStorage) DeleteFile(path string) error {
+	c.mu.Lock()
+	c.deleteFileCalls = append(c.deleteFileCalls, path)
+	c.mu.Unlock()
+	return c.Storage.DeleteFile(path)
+}
+
+func (c *countingStorage) reset() {
+	c.mu.Lock()
+	c.storeFileCalls = 0
+	c.storeChunksCalls = 0
+	c.deleteFileCalls = nil
+	c.mu.Unlock()
+}
 
 func TestIndexer_Index_e2e(t *testing.T) {
 	dir := t.TempDir()
@@ -314,5 +353,114 @@ func TestIndexer_WatchMode(t *testing.T) {
 		if len(results) > 0 {
 			t.Logf("watch mode: search found %d results", len(results))
 		}
+	}
+}
+
+func TestIndexer_Index_skipUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc Foo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("package main\nfunc Bar() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, err := datadir.DataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realSt, err := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realSt.Close()
+	cs := &countingStorage{Storage: realSt}
+	idx := New(Config{Storage: cs, Root: dir})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cs.storeFileCalls != 2 || cs.storeChunksCalls != 2 {
+		t.Errorf("first run: StoreFile=%d StoreChunks=%d, want 2, 2", cs.storeFileCalls, cs.storeChunksCalls)
+	}
+	cs.reset()
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cs.storeFileCalls != 0 || cs.storeChunksCalls != 0 {
+		t.Errorf("second run (unchanged): StoreFile=%d StoreChunks=%d, want 0, 0", cs.storeFileCalls, cs.storeChunksCalls)
+	}
+	fc, _ := realSt.FileCount()
+	cc, _ := realSt.ChunkCount()
+	if fc != 2 || cc < 2 {
+		t.Errorf("after second run: FileCount=%d ChunkCount=%d", fc, cc)
+	}
+}
+
+func TestIndexer_Index_deletedFilesRemoved(t *testing.T) {
+	dir := t.TempDir()
+	aPath := filepath.Join(dir, "a.go")
+	bPath := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(aPath, []byte("package main\nfunc Foo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("package main\nfunc Bar() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, err := datadir.DataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realSt, err := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realSt.Close()
+	cs := &countingStorage{Storage: realSt}
+	idx := New(Config{Storage: cs, Root: dir})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(bPath); err != nil {
+		t.Fatal(err)
+	}
+	cs.reset()
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var deletedB bool
+	for _, p := range cs.deleteFileCalls {
+		if p == "b.go" {
+			deletedB = true
+			break
+		}
+	}
+	if !deletedB {
+		t.Errorf("DeleteFile not called for b.go; deleteFileCalls=%v", cs.deleteFileCalls)
+	}
+	fc, _ := realSt.FileCount()
+	if fc != 1 {
+		t.Errorf("FileCount=%d, want 1 after removing b.go", fc)
+	}
+}
+
+func TestIndexer_Index_skipUnchanged_disabled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte("package p\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, _ := datadir.DataDir(dir)
+	realSt, _ := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	defer realSt.Close()
+	cs := &countingStorage{Storage: realSt}
+	skipFalse := false
+	idx := New(Config{Storage: cs, Root: dir, SkipUnchanged: &skipFalse})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cs.reset()
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cs.storeFileCalls != 1 || cs.storeChunksCalls != 1 {
+		t.Errorf("with SkipUnchanged=false second run: StoreFile=%d StoreChunks=%d, want 1, 1", cs.storeFileCalls, cs.storeChunksCalls)
 	}
 }

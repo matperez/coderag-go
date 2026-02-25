@@ -22,13 +22,14 @@ const defaultMaxChunkSize = 1000
 
 // Indexer indexes a codebase into storage.
 type Indexer struct {
-	storage  storage.Storage
-	tok      *tokenizer.Tokenizer
-	root     string
-	maxSize  int64
-	maxChunk int
-	watch    bool
-	status   IndexStatus
+	storage       storage.Storage
+	tok           *tokenizer.Tokenizer
+	root          string
+	maxSize       int64
+	maxChunk      int
+	watch         bool
+	skipUnchanged bool // if true, skip re-indexing files with same hash (and mtime within 1s)
+	status        IndexStatus
 }
 
 // IndexStatus is the current indexing status.
@@ -44,11 +45,12 @@ type IndexStatus struct {
 
 // Config for the indexer.
 type Config struct {
-	Storage      storage.Storage
-	Root         string
-	MaxFileSize  int64
-	MaxChunkSize int
-	Watch        bool // if true, after indexing run watcher until context is cancelled
+	Storage       storage.Storage
+	Root          string
+	MaxFileSize   int64
+	MaxChunkSize  int
+	Watch         bool  // if true, after indexing run watcher until context is cancelled
+	SkipUnchanged *bool // if true or nil, skip re-indexing when hash (and mtime) unchanged; set to false to force full re-index
 }
 
 // New creates an indexer.
@@ -56,13 +58,18 @@ func New(cfg Config) *Indexer {
 	if cfg.MaxChunkSize <= 0 {
 		cfg.MaxChunkSize = defaultMaxChunkSize
 	}
+	skipUnchanged := true
+	if cfg.SkipUnchanged != nil && !*cfg.SkipUnchanged {
+		skipUnchanged = false
+	}
 	return &Indexer{
-		storage:  cfg.Storage,
-		tok:      tokenizer.New(),
-		root:     cfg.Root,
-		maxSize:  cfg.MaxFileSize,
-		maxChunk: cfg.MaxChunkSize,
-		watch:    cfg.Watch,
+		storage:       cfg.Storage,
+		tok:           tokenizer.New(),
+		root:          cfg.Root,
+		maxSize:       cfg.MaxFileSize,
+		maxChunk:      cfg.MaxChunkSize,
+		watch:         cfg.Watch,
+		skipUnchanged: skipUnchanged,
 	}
 }
 
@@ -232,6 +239,32 @@ func (x *Indexer) Index(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Remove from index any paths that no longer exist on disk
+	currentPaths := make(map[string]struct{})
+	for _, e := range entries {
+		path, _ := filepath.Rel(x.root, e.Path)
+		if path == "" || path == "." {
+			path = e.Path
+		}
+		currentPaths[path] = struct{}{}
+	}
+	storedPaths, err := x.storage.ListFiles()
+	if err != nil {
+		return err
+	}
+	var deleted int
+	for _, p := range storedPaths {
+		if _, ok := currentPaths[p]; !ok {
+			if err := x.storage.DeleteFile(p); err != nil {
+				slog.Warn("delete file from index", "path", p, "error", err)
+				continue
+			}
+			deleted++
+		}
+	}
+	if deleted > 0 {
+		slog.Info("removed deleted files from index", "count", deleted)
+	}
 	x.status.TotalFiles = len(entries)
 	slog.Info("indexing started", "total_files", len(entries))
 	// Pass 1: read files, store files, chunk and collect term freqs
@@ -264,6 +297,23 @@ func (x *Indexer) Index(ctx context.Context) error {
 		}
 		x.status.CurrentFile = path
 		hash := sha256Hex(content)
+		if x.skipUnchanged {
+			existing, _ := x.storage.GetFile(path)
+			if existing != nil && existing.Hash == hash {
+				// mtime within 1s tolerance (filesystem precision)
+				if existing.Mtime == e.Mtime || abs64(existing.Mtime-e.Mtime) <= 1000 {
+					processed++
+					x.status.ProcessedFiles = processed
+					if x.status.TotalFiles > 0 {
+						x.status.Progress = processed * 100 / x.status.TotalFiles
+					}
+					if processed%10 == 0 || processed == total {
+						slog.Info("indexing progress", "processed", processed, "total", total, "progress_pct", x.status.Progress, "current_file", path)
+					}
+					continue
+				}
+			}
+		}
 		err = x.storage.StoreFile(storage.File{
 			Path: path, Content: string(content), Hash: hash,
 			Size: e.Size, Mtime: e.Mtime, IndexedAt: nowMillis(),
@@ -299,26 +349,54 @@ func (x *Indexer) Index(ctx context.Context) error {
 			})
 		}
 	}
-	// Compute global IDF from all chunk term freqs
+	// If nothing to re-index, only update status and finish
+	if len(fileChunks) == 0 {
+		x.status.Progress = 100
+		fc, _ := x.storage.FileCount()
+		cc, _ := x.storage.ChunkCount()
+		x.status.IndexedChunks = cc
+		x.status.ProcessedFiles = fc
+		x.status.CurrentFile = ""
+		slog.Info("indexing done", "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
+		if x.watch {
+			return x.runWatcher(ctx)
+		}
+		return nil
+	}
+	// Compute global IDF: merge existing storage doc freqs with this run's fileChunks
 	var allFreqs []map[string]int
 	for _, chunks := range fileChunks {
 		for _, cd := range chunks {
 			allFreqs = append(allFreqs, cd.termFreq)
 		}
 	}
-	N := float64(len(allFreqs))
-	if N < 1 {
-		N = 1
+	NNew := len(allFreqs)
+	NBefore, _ := x.storage.ChunkCount()
+	NAfter := float64(NBefore + NNew)
+	if NAfter < 1 {
+		NAfter = 1
 	}
-	docFreq := make(map[string]int)
+	termsSet := make(map[string]struct{})
 	for _, freq := range allFreqs {
 		for term := range freq {
-			docFreq[term]++
+			termsSet[term] = struct{}{}
+		}
+	}
+	terms := make([]string, 0, len(termsSet))
+	for t := range termsSet {
+		terms = append(terms, t)
+	}
+	dfBefore, _ := x.storage.DocFreqs(terms)
+	docFreqNew := make(map[string]int)
+	for _, freq := range allFreqs {
+		for term := range freq {
+			docFreqNew[term]++
 		}
 	}
 	idf := make(map[string]float64)
-	for term, df := range docFreq {
-		idf[term] = math.Log((N+1)/float64(df+1)) + 1
+	for _, t := range terms {
+		dfAfter := dfBefore[t] + docFreqNew[t]
+		idf[t] = math.Log((NAfter+1)/float64(dfAfter+1)) + 1
 	}
 	// Pass 2: store chunks with magnitude/tokenCount and vectors
 	for path, chunks := range fileChunks {
@@ -383,30 +461,33 @@ func (x *Indexer) Index(ctx context.Context) error {
 	x.status.ProcessedFiles = fc
 	x.status.CurrentFile = ""
 	slog.Info("indexing done", "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
-
 	if x.watch {
-		w := watcher.New(watcher.Options{
-			Root:         x.root,
-			UseGitignore: true,
-			Debounce:     150 * time.Millisecond,
-		})
-		if err := w.Start(); err != nil {
-			return err
-		}
-		defer w.Close()
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case e, ok := <-w.Events():
-				if !ok {
-					return nil
-				}
-				_ = x.ProcessEvent(ctx, e.Path, e.Op)
-			}
-		}
+		return x.runWatcher(ctx)
 	}
 	return nil
+}
+
+func (x *Indexer) runWatcher(ctx context.Context) error {
+	w := watcher.New(watcher.Options{
+		Root:         x.root,
+		UseGitignore: true,
+		Debounce:     150 * time.Millisecond,
+	})
+	if err := w.Start(); err != nil {
+		return err
+	}
+	defer w.Close()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case e, ok := <-w.Events():
+			if !ok {
+				return nil
+			}
+			_ = x.ProcessEvent(ctx, e.Path, e.Op)
+		}
+	}
 }
 
 func sha256Hex(b []byte) string {
@@ -415,3 +496,10 @@ func sha256Hex(b []byte) string {
 }
 
 func nowMillis() int64 { return time.Now().UnixMilli() }
+
+func abs64(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
