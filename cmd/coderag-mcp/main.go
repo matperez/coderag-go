@@ -9,14 +9,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/matperez/coderag-go/internal/datadir"
+	"github.com/matperez/coderag-go/internal/embeddings"
+	"github.com/matperez/coderag-go/internal/metadata"
 	"github.com/matperez/coderag-go/internal/indexer"
 	"github.com/matperez/coderag-go/internal/search"
 	"github.com/matperez/coderag-go/internal/storage"
 	"github.com/matperez/coderag-go/internal/tokenizer"
+	"github.com/matperez/coderag-go/internal/vectorstore"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+const requestTimeout = 30 * time.Second
 
 func main() {
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default from CODERAG_LOG or info)")
@@ -42,7 +48,34 @@ func main() {
 		slog.Error("mkdir datadir failed", "error", err)
 		os.Exit(1)
 	}
+	if err := metadata.Ensure(dataDir, rootPath); err != nil {
+		slog.Warn("metadata write failed", "error", err)
+	}
 	slog.Info("starting", "root", rootPath, "data_dir", dataDir)
+
+	var embedder embeddings.Provider
+	var vecStore vectorstore.Store
+	embCfg := embeddings.DefaultOpenAIConfig()
+	embeddingsEnabled := embCfg.APIKey != "" || os.Getenv("OPENAI_BASE_URL") != ""
+	if embeddingsEnabled {
+		embedder = embeddings.NewOpenAIProvider(embCfg)
+		dimCtx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		dimVec, err := embedder.GenerateEmbedding(dimCtx, "x")
+		cancel()
+		if err != nil {
+			slog.Warn("embeddings disabled", "error", err)
+			embedder = nil
+		} else {
+			dim := len(dimVec)
+			vs, err := vectorstore.Open(context.Background(), dataDir, dim)
+			if err != nil {
+				slog.Warn("vector store disabled", "error", err)
+			} else {
+				vecStore = vs
+				defer vs.Close()
+			}
+		}
+	}
 
 	dbPath := filepath.Join(dataDir, "index.db")
 	st, err := storage.NewSQLiteStorage(dbPath)
@@ -56,6 +89,8 @@ func main() {
 		Storage:     st,
 		Root:        rootPath,
 		MaxFileSize: *maxSize,
+		Embedder:    embedder,
+		VecStore:    vecStore,
 	})
 
 	if *indexOnly {
@@ -68,8 +103,16 @@ func main() {
 		return
 	}
 
+	var hybridOpts *search.HybridOpts
+	if embedder != nil && vecStore != nil {
+		hybridOpts = &search.HybridOpts{
+			VecStore:   vecStore,
+			Embedder:  embedder,
+			BM25Weight: 0.5,
+		}
+	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "coderag-go", Version: "0.1.0"}, nil)
-	registerCodebaseSearch(server, st, rootPath, nil) // optional: pass HybridOpts for BM25+vector
+	registerCodebaseSearch(server, st, rootPath, hybridOpts)
 	registerCodebaseIndexStatus(server, idx)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		slog.Error("MCP server failed", "error", err)

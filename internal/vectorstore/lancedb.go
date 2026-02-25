@@ -28,7 +28,7 @@ type LanceStore struct {
 
 // Open opens or creates a vector store at dataDir. The directory is created if missing.
 // dimension is the embedding vector size (must match the provider).
-func Open(ctx context.Context, dataDir string, dimension int) (*LanceStore, error) {
+func Open(ctx context.Context, dataDir string, dimension int) (Store, error) {
 	if dimension <= 0 {
 		return nil, fmt.Errorf("vectorstore: dimension must be positive")
 	}

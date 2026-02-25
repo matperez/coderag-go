@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/matperez/coderag-go/internal/datadir"
+	"github.com/matperez/coderag-go/internal/embeddings"
 	"github.com/matperez/coderag-go/internal/search"
 	"github.com/matperez/coderag-go/internal/storage"
+	"github.com/matperez/coderag-go/internal/vectorstore"
 	"github.com/matperez/coderag-go/internal/watcher"
 )
 
@@ -462,5 +464,102 @@ func TestIndexer_Index_skipUnchanged_disabled(t *testing.T) {
 	}
 	if cs.storeFileCalls != 1 || cs.storeChunksCalls != 1 {
 		t.Errorf("with SkipUnchanged=false second run: StoreFile=%d StoreChunks=%d, want 1, 1", cs.storeFileCalls, cs.storeChunksCalls)
+	}
+}
+
+// recordingVecStore records chunk IDs passed to DeleteChunk for tests.
+type recordingVecStore struct {
+	vectorstore.MockStore
+	deletedIDs []int64
+	mu         sync.Mutex
+}
+
+func (r *recordingVecStore) DeleteChunk(ctx context.Context, chunkID int64) error {
+	r.mu.Lock()
+	r.deletedIDs = append(r.deletedIDs, chunkID)
+	r.mu.Unlock()
+	return r.MockStore.DeleteChunk(ctx, chunkID)
+}
+
+func TestIndexer_Index_embeddingsUpsert(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc Foo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, err := datadir.DataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realSt, err := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realSt.Close()
+	embedder := &embeddings.MockProvider{Dimension: 8}
+	vs := &vectorstore.MockStore{}
+	idx := New(Config{Storage: realSt, Root: dir, Embedder: embedder, VecStore: vs})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(vs.Rows) < 1 {
+		t.Errorf("expected at least 1 row in vector store, got %d", len(vs.Rows))
+	}
+	for i, row := range vs.Rows {
+		if row.ID <= 0 {
+			t.Errorf("row %d: ID=%d, want positive", i, row.ID)
+		}
+		if len(row.Vector) != 8 {
+			t.Errorf("row %d: vector len=%d, want 8", i, len(row.Vector))
+		}
+	}
+}
+
+func TestIndexer_Index_deletedFilesRemoved_vecStore(t *testing.T) {
+	dir := t.TempDir()
+	aPath := filepath.Join(dir, "a.go")
+	bPath := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(aPath, []byte("package main\nfunc Foo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("package main\nfunc Bar() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, err := datadir.DataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realSt, err := storage.NewSQLiteStorage(filepath.Join(dataDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realSt.Close()
+	vs := &recordingVecStore{}
+	embedder := &embeddings.MockProvider{Dimension: 8}
+	idx := New(Config{Storage: realSt, Root: dir, Embedder: embedder, VecStore: vs})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bChunkIDs, err := realSt.ListChunkIDsByFile("b.go")
+	if err != nil || len(bChunkIDs) == 0 {
+		t.Fatalf("expected chunk IDs for b.go: err=%v len=%d", err, len(bChunkIDs))
+	}
+	if err := os.Remove(bPath); err != nil {
+		t.Fatal(err)
+	}
+	vs.deletedIDs = nil
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, wantID := range bChunkIDs {
+		var found bool
+		for _, got := range vs.deletedIDs {
+			if got == wantID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DeleteChunk not called for b.go chunk ID %d; deletedIDs=%v", wantID, vs.deletedIDs)
+		}
 	}
 }

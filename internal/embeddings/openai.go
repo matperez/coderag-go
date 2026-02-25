@@ -17,13 +17,19 @@ type OpenAIConfig struct {
 	BatchSize int
 }
 
-// DefaultOpenAIConfig returns config from environment: OPENAI_API_KEY, OPENAI_BASE_URL (optional), OPENAI_EMBEDDING_MODEL (default text-embedding-3-small).
+const defaultOpenAIBase = "https://api.openai.com/v1"
+
+// DefaultOpenAIConfig returns config from environment: OPENAI_API_KEY, OPENAI_BASE_URL (optional),
+// EMBEDDING_MODEL or OPENAI_EMBEDDING_MODEL (default text-embedding-3-small).
 func DefaultOpenAIConfig() OpenAIConfig {
 	base := os.Getenv("OPENAI_BASE_URL")
 	if base == "" {
-		base = "https://api.openai.com/v1"
+		base = defaultOpenAIBase
 	}
-	model := os.Getenv("OPENAI_EMBEDDING_MODEL")
+	model := os.Getenv("EMBEDDING_MODEL")
+	if model == "" {
+		model = os.Getenv("OPENAI_EMBEDDING_MODEL")
+	}
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
@@ -69,11 +75,12 @@ func (p *OpenAIProvider) GenerateEmbedding(ctx context.Context, text string) ([]
 }
 
 // GenerateEmbeddings returns embeddings for multiple texts, batching requests if needed.
+// Empty APIKey is allowed when BaseURL is not the default (e.g. local Ollama).
 func (p *OpenAIProvider) GenerateEmbeddings(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	if p.cfg.APIKey == "" {
+	if p.cfg.APIKey == "" && p.cfg.BaseURL == defaultOpenAIBase {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
 	batchSize := p.cfg.BatchSize

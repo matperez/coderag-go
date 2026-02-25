@@ -28,6 +28,10 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable WAL: %w", err)
+	}
 	slog.Info("database open", "db", dbPath)
 	if err := RunMigrations(db); err != nil {
 		_ = db.Close()

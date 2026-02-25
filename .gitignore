@@ -1,2 +1,6 @@
 /coderag-mcp
 *.exe
+
+# LanceDB native artifacts (see Makefile target download-lancedb)
+/lib/
+/include/
