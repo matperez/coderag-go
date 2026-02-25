@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/matperez/coderag-go/internal/astchunk"
 	"github.com/matperez/coderag-go/internal/chunk"
 	"github.com/matperez/coderag-go/internal/scan"
 	"github.com/matperez/coderag-go/internal/storage"
@@ -122,7 +123,13 @@ func (x *Indexer) Index(ctx context.Context) error {
 		if x.status.TotalFiles > 0 {
 			x.status.Progress = processed * 100 / x.status.TotalFiles
 		}
-		chunks := chunk.ChunkByCharacters(string(content), x.maxChunk)
+		ext := filepath.Ext(path)
+		var chunks []chunk.Chunk
+		if astChunks, ok := astchunk.ChunkByAST(ctx, string(content), ext, x.maxChunk); ok {
+			chunks = astChunks
+		} else {
+			chunks = chunk.ChunkByCharacters(string(content), x.maxChunk)
+		}
 		for _, c := range chunks {
 			tokens := x.tok.Tokenize(c.Content)
 			freq := make(map[string]int)

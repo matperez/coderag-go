@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/matperez/coderag-go/internal/datadir"
@@ -126,5 +127,73 @@ func TestIndexer_GetStatus_duringIndex(t *testing.T) {
 	}
 	if !sawProgress {
 		t.Log("note: did not observe progress during indexing (timing)")
+	}
+}
+
+func TestIndexer_Index_e2e_astChunking(t *testing.T) {
+	dir := t.TempDir()
+	// Go file with distinct function name for AST chunking
+	goCode := `package main
+import "fmt"
+func HandleRequest() { fmt.Println("ok") }
+func Other() {}
+`
+	jsCode := `function fetchData() { return 1; }
+class Helper { run() {} }
+`
+	if err := os.WriteFile(filepath.Join(dir, "api.go"), []byte(goCode), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lib.js"), []byte(jsCode), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, err := datadir.DataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dataDir, "index.db")
+	st, err := storage.NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	idx := New(Config{Storage: st, Root: dir})
+	if err := idx.Index(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Search by function name (tokenizer: HandleRequest -> handle, request)
+	idf, candidates, err := st.SearchCandidates([]string{"handle", "request"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sc []search.StorageCandidate
+	avgLen := 0.0
+	for _, c := range candidates {
+		terms := make(map[string]search.TermScore)
+		for k, v := range c.Terms {
+			terms[k] = search.TermScore{TF: v.TF, TFIDF: v.TFIDF, RawFreq: v.RawFreq}
+		}
+		sc = append(sc, search.StorageCandidate{
+			FilePath: c.FilePath, Content: c.Content, StartLine: c.StartLine, EndLine: c.EndLine,
+			TokenCount: c.TokenCount, Terms: terms,
+		})
+		avgLen += float64(c.TokenCount)
+	}
+	if len(sc) > 0 {
+		avgLen /= float64(len(sc))
+	}
+	results := search.SearchFromStorage("handle request", idf, sc, avgLen, 10)
+	if len(results) == 0 {
+		t.Fatal("expected search result for 'handle request'")
+	}
+	var found bool
+	for _, c := range candidates {
+		if c.FilePath == "api.go" && strings.Contains(c.Content, "HandleRequest") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected a chunk from api.go containing HandleRequest (AST chunking)")
 	}
 }
