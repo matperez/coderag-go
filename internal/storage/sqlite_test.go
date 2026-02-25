@@ -59,14 +59,15 @@ func TestSQLiteStorage_StoreChunks(t *testing.T) {
 		{Content: "chunk1", Type: "text", StartLine: 1, EndLine: 2},
 		{Content: "chunk2", Type: "text", StartLine: 3, EndLine: 4},
 	}
-	if err := s.StoreChunks("a.go", chunks); err != nil {
+	_, err = s.StoreChunks("a.go", chunks)
+	if err != nil {
 		t.Fatalf("StoreChunks: %v", err)
 	}
-	// Replace chunks
 	chunks2 := []Chunk{
 		{Content: "only one", Type: "text", StartLine: 1, EndLine: 1},
 	}
-	if err := s.StoreChunks("a.go", chunks2); err != nil {
+	_, err = s.StoreChunks("a.go", chunks2)
+	if err != nil {
 		t.Fatalf("StoreChunks replace: %v", err)
 	}
 	// Verify: 1 file, 1 chunk after replace
@@ -83,5 +84,33 @@ func TestSQLiteStorage_StoreChunks(t *testing.T) {
 	}
 	if cn != 1 {
 		t.Errorf("ChunkCount: got %d", cn)
+	}
+}
+
+func TestSQLiteStorage_StoreChunkVectors(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "vec.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "f.go", Content: "x", Hash: "h", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.StoreChunks("f.go", []Chunk{{Content: "c", Type: "text", StartLine: 1, EndLine: 1}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("StoreChunks: %v", err)
+	}
+	vecs := []VectorRow{
+		{Term: "get", TF: 0.5, TFIDF: 1.2, RawFreq: 2},
+		{Term: "user", TF: 0.3, TFIDF: 0.8, RawFreq: 1},
+	}
+	if err := s.StoreChunkVectors(ids[0], vecs); err != nil {
+		t.Fatalf("StoreChunkVectors: %v", err)
+	}
+	// Replace vectors
+	if err := s.StoreChunkVectors(ids[0], []VectorRow{{Term: "only", TF: 1, TFIDF: 1, RawFreq: 1}}); err != nil {
+		t.Fatal(err)
 	}
 }

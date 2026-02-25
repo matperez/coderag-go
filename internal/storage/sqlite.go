@@ -56,25 +56,47 @@ func (s *SQLiteStorage) StoreFile(file File) error {
 }
 
 // StoreChunks inserts chunks for the file at filePath (file must already be stored).
-func (s *SQLiteStorage) StoreChunks(filePath string, chunks []Chunk) error {
+// Returns the inserted chunk IDs in order.
+func (s *SQLiteStorage) StoreChunks(filePath string, chunks []Chunk) ([]int64, error) {
 	var fileID int64
 	err := s.db.QueryRow("SELECT id FROM files WHERE path = ?", filePath).Scan(&fileID)
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("file not found: %s", filePath)
+		return nil, fmt.Errorf("file not found: %s", filePath)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// Delete existing chunks for this file so we replace atomically
 	_, err = s.db.Exec("DELETE FROM chunks WHERE file_id = ?", fileID)
 	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(chunks))
+	for _, c := range chunks {
+		tokenCount := c.TokenCount
+		magnitude := c.Magnitude
+		res, err := s.db.Exec(`
+			INSERT INTO chunks (file_id, content, type, start_line, end_line, metadata, token_count, magnitude)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, fileID, c.Content, c.Type, c.StartLine, c.EndLine, nullString(c.Metadata), tokenCount, magnitude)
+		if err != nil {
+			return nil, err
+		}
+		id, _ := res.LastInsertId()
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// StoreChunkVectors inserts TF-IDF vector rows for a chunk. Replaces any existing vectors for that chunk.
+func (s *SQLiteStorage) StoreChunkVectors(chunkID int64, rows []VectorRow) error {
+	_, err := s.db.Exec("DELETE FROM document_vectors WHERE chunk_id = ?", chunkID)
+	if err != nil {
 		return err
 	}
-	for _, c := range chunks {
+	for _, r := range rows {
 		_, err = s.db.Exec(`
-			INSERT INTO chunks (file_id, content, type, start_line, end_line, metadata)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, fileID, c.Content, c.Type, c.StartLine, c.EndLine, nullString(c.Metadata))
+			INSERT INTO document_vectors (chunk_id, term, tf, tfidf, raw_freq) VALUES (?, ?, ?, ?, ?)
+		`, chunkID, r.Term, r.TF, r.TFIDF, r.RawFreq)
 		if err != nil {
 			return err
 		}
