@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -27,10 +28,12 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	slog.Info("database open", "db", dbPath)
 	if err := RunMigrations(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	slog.Info("migrations applied", "db", dbPath)
 	return &SQLiteStorage{db: db}, nil
 }
 
