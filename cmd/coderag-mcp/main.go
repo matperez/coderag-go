@@ -59,6 +59,7 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "coderag-go", Version: "0.1.0"}, nil)
 	registerCodebaseSearch(server, st, rootPath)
+	registerCodebaseIndexStatus(server, idx)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("MCP server: %v", err)
 	}
@@ -123,6 +124,20 @@ func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string) {
 		md := formatSearchResultsMarkdown(results, args.IncludeContent, root)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: md}},
+		}, nil, nil
+	})
+}
+
+func registerCodebaseIndexStatus(s *mcp.Server, idx *indexer.Indexer) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "codebase_index_status",
+		Description: "Return current indexing status: is_indexing, progress (0-100), file and chunk counts.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, any, error) {
+		st := idx.GetStatus()
+		text := fmt.Sprintf("is_indexing: %v\nprogress: %d\nfiles: %d\nchunks: %d\n",
+			st.IsIndexing, st.Progress, st.ProcessedFiles, st.IndexedChunks)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		}, nil, nil
 	})
 }
