@@ -64,6 +64,26 @@ If the embedding API is unreachable or the vector store cannot be opened, the ap
 
 Index data is stored in `~/.coderag-go/projects/<hash>/` (hash of the absolute `--root` path).
 
+## Console CLI (coderag-cli)
+
+**coderag-cli** is a console client that queries an existing index (no indexing). Useful for testing and scripting without running the MCP server.
+
+Build with `make build` (outputs `bin/coderag-cli` and `bin/coderag-mcp`) or `make build-cli` for the CLI only. The index must already exist (create it with `coderag-mcp --root <project> --index-only`).
+
+**Usage:**
+
+```bash
+# Show index stats
+coderag-cli --root /path/to/project status
+coderag-cli --root /path/to/project --json status
+
+# Search (same semantics as MCP codebase_search)
+coderag-cli --root /path/to/project search "your query" [--limit N] [--include-content]
+coderag-cli --root /path/to/project --json search "query" [--limit N] [--ext .go,.js] [--path-filter dir] [--exclude test]
+```
+
+**Global flags:** `--root` (project root, default `.`), `--json` (machine-readable output for `status` and `search`).
+
 ## Supported file formats
 
 Only files with known extensions are indexed. For each format that has a [tree-sitter](https://github.com/smacker/go-tree-sitter) grammar, chunking uses the AST (functions, classes, types, etc.); otherwise content is split by characters. The `.txt` extension is indexed with character-based chunking only (no grammar).
@@ -112,11 +132,13 @@ Same idea: set `command` (path to `coderag-mcp`) and `args: ["--root", "<project
 ## Build and tests
 
 ```bash
-make build   # go build -tags lancedb -o coderag-mcp ./cmd/coderag-mcp
+make build   # build both bin/coderag-mcp and bin/coderag-cli (with LanceDB)
+make build-cli   # build only bin/coderag-cli
+make build-no-embeddings   # build both without LanceDB (BM25 only)
 make test    # go test ./...
 make lint    # golangci-lint run
 ```
 
 **Benchmarks:** run `go test -bench=. -benchmem ./internal/tokenizer/ ./internal/search/ ./internal/indexer/` to measure tokenization, search, and indexing performance; use to catch regressions and justify optimizations.
 
-To build without LanceDB (BM25-only, no vector store), run `go build ./cmd/coderag-mcp`. The resulting binary will log "vector store requires build with -tags lancedb" if embeddings env vars are set.
+To build without LanceDB (BM25-only, no vector store), run `make build-no-embeddings`. The resulting binaries will use BM25-only search when the vector store is unavailable.
