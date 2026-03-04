@@ -33,22 +33,24 @@ func Ensure(dataDir, rootPath string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			now := nowUTC()
 			return write(path, &ProjectMetadata{
 				Path:           rootPath,
 				Name:           ".",
-				CreatedAt:      nowUTC(),
-				LastAccessedAt: nowUTC(),
+				CreatedAt:      now,
+				LastAccessedAt: now,
 			})
 		}
 		return err
 	}
 	var m ProjectMetadata
 	if err := json.Unmarshal(data, &m); err != nil {
+		now := nowUTC()
 		return write(path, &ProjectMetadata{
 			Path:           rootPath,
 			Name:           ".",
-			CreatedAt:      nowUTC(),
-			LastAccessedAt: nowUTC(),
+			CreatedAt:      now,
+			LastAccessedAt: now,
 		})
 	}
 	m.LastAccessedAt = nowUTC()

@@ -100,3 +100,60 @@ func TestChunkByAST_unknownExt(t *testing.T) {
 		t.Error("unknown extension should fallback")
 	}
 }
+
+func TestChunkByAST_Python(t *testing.T) {
+	content := `def foo():
+    return 1
+
+class Bar:
+    pass
+`
+	chunks, ok := ChunkByAST(context.Background(), content, ".py", 1000)
+	if !ok {
+		t.Fatal("ChunkByAST should succeed for valid Python")
+	}
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks (foo, Bar), got %d", len(chunks))
+	}
+	var hasFoo, hasBar bool
+	for _, c := range chunks {
+		if strings.Contains(c.Content, "def foo") || strings.Contains(c.Content, "foo") {
+			hasFoo = true
+		}
+		if strings.Contains(c.Content, "class Bar") || strings.Contains(c.Content, "Bar") {
+			hasBar = true
+		}
+	}
+	if !hasFoo || !hasBar {
+		t.Errorf("expected chunks to contain foo and Bar declarations")
+	}
+}
+
+func TestChunkByAST_Ruby(t *testing.T) {
+	content := `def foo
+  1
+end
+
+class Bar
+end
+`
+	chunks, ok := ChunkByAST(context.Background(), content, ".rb", 1000)
+	if !ok {
+		t.Fatal("ChunkByAST should succeed for valid Ruby")
+	}
+	if len(chunks) < 1 {
+		t.Errorf("expected at least 1 chunk, got %d", len(chunks))
+	}
+	var hasFoo, hasBar bool
+	for _, c := range chunks {
+		if strings.Contains(c.Content, "foo") {
+			hasFoo = true
+		}
+		if strings.Contains(c.Content, "Bar") {
+			hasBar = true
+		}
+	}
+	if !hasFoo || !hasBar {
+		t.Errorf("expected chunks to contain foo and Bar declarations")
+	}
+}

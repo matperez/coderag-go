@@ -64,6 +64,14 @@ If the embedding API is unreachable or the vector store cannot be opened, the ap
 
 Index data is stored in `~/.coderag-go/projects/<hash>/` (hash of the absolute `--root` path).
 
+## Supported file formats
+
+Only files with known extensions are indexed. For each format that has a [tree-sitter](https://github.com/smacker/go-tree-sitter) grammar, chunking uses the AST (functions, classes, types, etc.); otherwise content is split by characters. The `.txt` extension is indexed with character-based chunking only (no grammar).
+
+**Languages with AST chunking:** Go, JavaScript/TypeScript (`.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`), CSS, Markdown, YAML, TOML, Protocol Buffers (`.proto`), JSON, Python (`.py`), Ruby (`.rb`), C/C++ (`.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`), C# (`.cs`), Bash (`.sh`), HTML (`.html`, `.htm`), Java (`.java`), Rust (`.rs`), Swift (`.swift`), PHP (`.php`), Lua (`.lua`), Kotlin (`.kt`), Scala (`.scala`, `.sc`), Groovy (`.groovy`, `.grvy`, `.gy`, `.gvy`), Elixir (`.ex`, `.exs`), Elm (`.elm`), OCaml (`.ml`, `.mli`), HCL (`.hcl`), CUE (`.cue`), Dockerfile, Svelte (`.svelte`), SQL (`.sql`).
+
+Unsupported extensions are ignored during indexing.
+
 ## MCP configuration
 
 ### Cursor
