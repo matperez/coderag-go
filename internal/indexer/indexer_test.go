@@ -75,6 +75,32 @@ func (c *countingStorage) RebuildIDFAndTfidf() error {
 	return c.Storage.RebuildIDFAndTfidf()
 }
 
+func (c *countingStorage) RunInTransaction(fn func(storage.Storage) error) error {
+	return c.Storage.RunInTransaction(func(tx storage.Storage) error {
+		return fn(&countingTxStorage{Storage: tx, counter: c})
+	})
+}
+
+// countingTxStorage wraps a Storage (tx) and counts StoreFile/StoreChunks when used inside RunInTransaction.
+type countingTxStorage struct {
+	storage.Storage
+	counter *countingStorage
+}
+
+func (t *countingTxStorage) StoreFile(f storage.File) error {
+	t.counter.mu.Lock()
+	t.counter.storeFileCalls++
+	t.counter.mu.Unlock()
+	return t.Storage.StoreFile(f)
+}
+
+func (t *countingTxStorage) StoreChunks(filePath string, chunks []storage.Chunk) ([]int64, error) {
+	t.counter.mu.Lock()
+	t.counter.storeChunksCalls++
+	t.counter.mu.Unlock()
+	return t.Storage.StoreChunks(filePath, chunks)
+}
+
 func (c *countingStorage) reset() {
 	c.mu.Lock()
 	c.storeFileCalls = 0

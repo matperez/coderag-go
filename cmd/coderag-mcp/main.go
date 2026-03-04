@@ -10,6 +10,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,7 +107,7 @@ func main() {
 		Storage:           st,
 		Root:              rootPath,
 		MaxFileSize:       *maxSize,
-		IndexingBatchSize: 0, // use default
+		IndexingBatchSize: envInt("INDEXING_BATCH_SIZE"), // 0 = default 50
 		Embedder:          embedder,
 		VecStore:          vecStore,
 	})
@@ -254,6 +255,15 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// envInt returns the integer value of the environment variable key, or 0 if unset or invalid.
+func envInt(key string) int {
+	v, err := strconv.Atoi(os.Getenv(key))
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func ptrStr(s *string) string {

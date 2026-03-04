@@ -25,7 +25,7 @@ import (
 
 const defaultMaxChunkSize = 1000
 
-const defaultIndexingBatchSize = 500
+const defaultIndexingBatchSize = 50 // files per DB transaction batch
 
 // contentSafeForEmbedding returns false for binary or invalid-UTF-8 content so we don't send it to the embedding API.
 func contentSafeForEmbedding(s string) bool {
@@ -80,7 +80,7 @@ type Config struct {
 	Root              string
 	MaxFileSize       int64
 	MaxChunkSize      int
-	IndexingBatchSize int                 // files per batch (0 = default 500). Memory bounded by batch size.
+	IndexingBatchSize int                 // files per DB transaction batch (0 = default 50)
 	Watch             bool                // if true, after indexing run watcher until context is cancelled
 	SkipUnchanged     *bool               // if true or nil, skip re-indexing when hash (and mtime) unchanged; set to false to force full re-index
 	Embedder          embeddings.Provider // optional: when set with VecStore, index chunk embeddings
@@ -378,92 +378,94 @@ func (x *Indexer) Index(ctx context.Context) error {
 		embedContents = embedContents[n:]
 	}
 
-	type chunkData struct {
-		content   string
-		chunkType string
-		startLine int
-		endLine   int
-		termFreq  map[string]int
+	// fileWriteData holds everything needed to write one file to storage (used for batch transaction).
+	type fileWriteData struct {
+		file    storage.File
+		chunks  []storage.Chunk
+		vectors [][]storage.VectorRow
 	}
-	processBatch := func(batch []fileToIndex) {
-		for _, item := range batch {
-			if err := x.storage.StoreFile(storage.File{
-				Path: item.path, Content: item.content, Hash: sha256Hex([]byte(item.content)),
-				Size: item.e.Size, Mtime: item.e.Mtime, IndexedAt: nowMillis(),
-			}); err != nil {
-				slog.Warn("skip file", "path", item.path, "error", err)
-				continue
+	computeFileWriteData := func(item fileToIndex) (fileWriteData, error) {
+		file := storage.File{
+			Path: item.path, Content: item.content, Hash: sha256Hex([]byte(item.content)),
+			Size: item.e.Size, Mtime: item.e.Mtime, IndexedAt: nowMillis(),
+		}
+		ext := filepath.Ext(item.path)
+		var chunks []chunk.Chunk
+		if astChunks, ok := astchunk.ChunkByAST(ctx, item.content, ext, x.maxChunk); ok {
+			chunks = astChunks
+		} else {
+			chunks = chunk.ChunkByCharacters(item.content, x.maxChunk)
+		}
+		stChunks := make([]storage.Chunk, 0, len(chunks))
+		vectors := make([][]storage.VectorRow, 0, len(chunks))
+		for _, c := range chunks {
+			tokens := x.tok.Tokenize(c.Content)
+			freq := make(map[string]int)
+			for _, t := range tokens {
+				freq[t]++
 			}
-			ext := filepath.Ext(item.path)
-			var chunks []chunk.Chunk
-			if astChunks, ok := astchunk.ChunkByAST(ctx, item.content, ext, x.maxChunk); ok {
-				chunks = astChunks
-			} else {
-				chunks = chunk.ChunkByCharacters(item.content, x.maxChunk)
+			tokenCount := 0
+			for _, cnt := range freq {
+				tokenCount += cnt
 			}
-			var fileChunkDatas []chunkData
-			for _, c := range chunks {
-				tokens := x.tok.Tokenize(c.Content)
-				freq := make(map[string]int)
-				for _, t := range tokens {
-					freq[t]++
-				}
-				fileChunkDatas = append(fileChunkDatas, chunkData{
-					content: c.Content, chunkType: c.Type,
-					startLine: c.StartLine, endLine: c.EndLine, termFreq: freq,
+			stChunks = append(stChunks, storage.Chunk{
+				Content: c.Content, Type: c.Type,
+				StartLine: c.StartLine, EndLine: c.EndLine,
+				TokenCount: tokenCount, Magnitude: 0,
+			})
+			totalTf := float64(tokenCount)
+			if totalTf <= 0 {
+				totalTf = 1
+			}
+			var rows []storage.VectorRow
+			for term, rawFreq := range freq {
+				rows = append(rows, storage.VectorRow{
+					Term: term, TF: float64(rawFreq) / totalTf, TFIDF: 0, RawFreq: rawFreq,
 				})
 			}
-			stChunks := make([]storage.Chunk, len(fileChunkDatas))
-			for i, cd := range fileChunkDatas {
-				tokenCount := 0
-				for _, c := range cd.termFreq {
-					tokenCount += c
-				}
-				stChunks[i] = storage.Chunk{
-					Content: cd.content, Type: cd.chunkType,
-					StartLine: cd.startLine, EndLine: cd.endLine,
-					TokenCount: tokenCount, Magnitude: 0,
-				}
-			}
-			chunkIDs, err := x.storage.StoreChunks(item.path, stChunks)
-			if err != nil {
-				continue
-			}
-			for i, cid := range chunkIDs {
-				cd := fileChunkDatas[i]
-				totalTf := 0.0
-				for _, c := range cd.termFreq {
-					totalTf += float64(c)
-				}
-				var rows []storage.VectorRow
-				for term, rawFreq := range cd.termFreq {
-					tf := float64(rawFreq) / totalTf
-					if totalTf <= 0 {
-						tf = 0
-					}
-					rows = append(rows, storage.VectorRow{
-						Term: term, TF: tf, TFIDF: 0, RawFreq: rawFreq,
-					})
-				}
-				_ = x.storage.StoreChunkVectors(cid, rows)
-			}
-			if x.embedder != nil && x.vecStore != nil {
-				for i, cid := range chunkIDs {
-					if !contentSafeForEmbedding(fileChunkDatas[i].content) {
-						continue
-					}
-					embedIDs = append(embedIDs, cid)
-					embedContents = append(embedContents, fileChunkDatas[i].content)
-				}
-				for len(embedContents) >= embedBatch {
-					flushOneEmbedBatch()
-				}
-			}
+			vectors = append(vectors, rows)
 		}
+		return fileWriteData{file: file, chunks: stChunks, vectors: vectors}, nil
+	}
+	flushPending := func(pending []fileWriteData) error {
+		var batchEmbedIDs []int64
+		var batchEmbedContents []string
+		err := x.storage.RunInTransaction(func(tx storage.Storage) error {
+			for _, p := range pending {
+				if err := tx.StoreFile(p.file); err != nil {
+					return err
+				}
+				chunkIDs, err := tx.StoreChunks(p.file.Path, p.chunks)
+				if err != nil {
+					return err
+				}
+				for i, cid := range chunkIDs {
+					if err := tx.StoreChunkVectors(cid, p.vectors[i]); err != nil {
+						return err
+					}
+					if x.embedder != nil && x.vecStore != nil && contentSafeForEmbedding(p.chunks[i].Content) {
+						batchEmbedIDs = append(batchEmbedIDs, cid)
+						batchEmbedContents = append(batchEmbedContents, p.chunks[i].Content)
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		slog.Info("batch saved to database", "files", len(pending))
+		embedIDs = append(embedIDs, batchEmbedIDs...)
+		embedContents = append(embedContents, batchEmbedContents...)
+		for len(embedContents) >= embedBatch {
+			flushOneEmbedBatch()
+		}
+		return nil
 	}
 
 	processed := 0
 	filesIndexedThisRun := false
+	var pending []fileWriteData
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -500,8 +502,24 @@ func (x *Indexer) Index(ctx context.Context) error {
 			}
 		}
 		filesIndexedThisRun = true
-		processBatch([]fileToIndex{{path: path, content: string(content), e: e}})
+		data, err := computeFileWriteData(fileToIndex{path: path, content: string(content), e: e})
+		if err != nil {
+			slog.Warn("skip file", "path", path, "error", err)
+			continue
+		}
+		pending = append(pending, data)
 		slog.Debug("indexed file", "path", path, "processed", processed, "total", total, "progress_pct", x.status.Progress)
+		if len(pending) >= x.indexingBatchSize {
+			if err := flushPending(pending); err != nil {
+				slog.Warn("batch transaction failed", "error", err)
+			}
+			pending = pending[:0]
+		}
+	}
+	if len(pending) > 0 {
+		if err := flushPending(pending); err != nil {
+			slog.Warn("batch transaction failed", "error", err)
+		}
 	}
 
 	if !filesIndexedThisRun {

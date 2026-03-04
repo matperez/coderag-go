@@ -51,6 +51,8 @@ type Storage interface {
 	ListChunkIDsByFile(path string) ([]int64, error)
 	// RebuildIDFAndTfidf recomputes IDF from document_vectors, updates tfidf in document_vectors, and chunk magnitudes.
 	RebuildIDFAndTfidf() error
+	// RunInTransaction runs fn with a transactional view of the storage. On error the transaction is rolled back.
+	RunInTransaction(fn func(Storage) error) error
 }
 
 // ChunkInfo is the minimal chunk data for search result resolution.
