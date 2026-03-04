@@ -16,11 +16,55 @@ const (
 	maxChunkRowsPerInsert         = 100 // batch size for multi-row INSERT into chunks (under SQLite parameter limit)
 	maxVectorRowsPerInsert        = 100 // batch size for multi-row INSERT into document_vectors
 	rebuildIDFProgressIntervalPct = 10  // log rebuild IDF progress every N%
+	maxTermsPerRebuildBatch       = 200 // batch size for UPDATE document_vectors in RebuildIDFAndTfidf (under SQLite parameter limit)
 )
 
 // execer is satisfied by *sql.DB and *sql.Tx for bulk insert helpers.
 type execer interface {
 	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// termDF holds term and document frequency for RebuildIDFAndTfidf batching.
+type termDF struct {
+	term string
+	df   int
+}
+
+// rebuildIDFTermsBatched updates document_vectors tfidf in batches via CASE/IN, calling logProgress after each batch (if non-nil).
+func rebuildIDFTermsBatched(exec execer, terms []termDF, n float64, logProgress func(updated, total int)) error {
+	for i := 0; i < len(terms); i += maxTermsPerRebuildBatch {
+		end := i + maxTermsPerRebuildBatch
+		if end > len(terms) {
+			end = len(terms)
+		}
+		batch := terms[i:end]
+		if len(batch) == 0 {
+			continue
+		}
+		var caseParts []string
+		var args []any
+		for _, t := range batch {
+			idf := math.Log((n+1)/float64(t.df+1)) + 1
+			caseParts = append(caseParts, "WHEN ? THEN ?")
+			args = append(args, t.term, idf)
+		}
+		for _, t := range batch {
+			args = append(args, t.term)
+		}
+		inPlaceholders := make([]string, len(batch))
+		for j := range inPlaceholders {
+			inPlaceholders[j] = "?"
+		}
+		query := "UPDATE document_vectors SET tfidf = tf * CASE term " +
+			strings.Join(caseParts, " ") + " END WHERE term IN (" + strings.Join(inPlaceholders, ",") + ")"
+		if _, err := exec.Exec(query, args...); err != nil {
+			return err
+		}
+		if logProgress != nil {
+			logProgress(end, len(terms))
+		}
+	}
+	return nil
 }
 
 // SQLiteStorage implements Storage using SQLite.
@@ -386,10 +430,6 @@ func (s *txStorage) RebuildIDFAndTfidf() error {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
-	type termDF struct {
-		term string
-		df   int
-	}
 	var terms []termDF
 	for rows.Next() {
 		var t termDF
@@ -401,12 +441,8 @@ func (s *txStorage) RebuildIDFAndTfidf() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, t := range terms {
-		idf := math.Log((n+1)/float64(t.df+1)) + 1
-		_, err := s.tx.Exec("UPDATE document_vectors SET tfidf = tf * ? WHERE term = ?", idf, t.term)
-		if err != nil {
-			return err
-		}
+	if err := rebuildIDFTermsBatched(s.tx, terms, n, nil); err != nil {
+		return err
 	}
 	_, err = s.tx.Exec(`
 		UPDATE chunks SET magnitude = (
@@ -589,10 +625,6 @@ func (s *SQLiteStorage) RebuildIDFAndTfidf() error {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
-	type termDF struct {
-		term string
-		df   int
-	}
 	var terms []termDF
 	for rows.Next() {
 		var t termDF
@@ -604,28 +636,33 @@ func (s *SQLiteStorage) RebuildIDFAndTfidf() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
 	lastLoggedPct := -1
-	for i, t := range terms {
-		idf := math.Log((n+1)/float64(t.df+1)) + 1
-		_, err := s.db.Exec("UPDATE document_vectors SET tfidf = tf * ? WHERE term = ?", idf, t.term)
-		if err != nil {
-			return err
-		}
-		if len(terms) > 0 {
-			pct := (i + 1) * 100 / len(terms)
+	logProgress := func(updated, total int) {
+		if total > 0 {
+			pct := updated * 100 / total
 			if pct > lastLoggedPct && (pct%rebuildIDFProgressIntervalPct == 0 || pct == 100) {
-				slog.Info("rebuild IDF progress", "progress_pct", pct, "terms_updated", i+1, "total_terms", len(terms))
+				slog.Info("rebuild IDF progress", "progress_pct", pct, "terms_updated", updated, "total_terms", total)
 				lastLoggedPct = pct
 			}
 		}
 	}
+	if err := rebuildIDFTermsBatched(tx, terms, n, logProgress); err != nil {
+		return err
+	}
 	slog.Info("rebuild IDF: updating chunk magnitudes")
-	_, err = s.db.Exec(`
+	if _, err := tx.Exec(`
 		UPDATE chunks SET magnitude = (
 			SELECT COALESCE(SQRT(SUM(tfidf * tfidf)), 0) FROM document_vectors WHERE chunk_id = chunks.id
 		)
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SearchCandidates returns IDF for the given terms and chunks that contain any of them.
