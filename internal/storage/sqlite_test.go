@@ -3,6 +3,7 @@ package storage
 import (
 	"math"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -113,6 +114,81 @@ func TestSQLiteStorage_StoreChunkVectors(t *testing.T) {
 	// Replace vectors
 	if err := s.StoreChunkVectors(ids[0], []VectorRow{{Term: "only", TF: 1, TFIDF: 1, RawFreq: 1}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSQLiteStorage_StoreChunks_bulkOver100 verifies bulk insert batching with more than maxChunkRowsPerInsert chunks.
+func TestSQLiteStorage_StoreChunks_bulkOver100(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "bulk.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage: %v", err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "big.go", Content: "x", Hash: "h", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// 150 chunks to span two bulk INSERT batches (100 + 50)
+	chunks := make([]Chunk, 150)
+	for i := range chunks {
+		chunks[i] = Chunk{
+			Content:   "chunk " + strconv.Itoa(i),
+			Type:      "text",
+			StartLine: i + 1,
+			EndLine:   i + 2,
+		}
+	}
+	ids, err := s.StoreChunks("big.go", chunks)
+	if err != nil {
+		t.Fatalf("StoreChunks: %v", err)
+	}
+	if len(ids) != 150 {
+		t.Fatalf("StoreChunks: got %d ids, want 150", len(ids))
+	}
+	// IDs must be strictly increasing (order preserved)
+	for i := 1; i < len(ids); i++ {
+		if ids[i] <= ids[i-1] {
+			t.Errorf("ids not ordered: ids[%d]=%d ids[%d]=%d", i-1, ids[i-1], i, ids[i])
+		}
+	}
+	cn, _ := s.ChunkCount()
+	if cn != 150 {
+		t.Errorf("ChunkCount: got %d, want 150", cn)
+	}
+}
+
+// TestSQLiteStorage_StoreChunkVectors_bulkOver100 verifies bulk insert batching with more than maxVectorRowsPerInsert rows.
+func TestSQLiteStorage_StoreChunkVectors_bulkOver100(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "vec_bulk.db")
+	s, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.StoreFile(File{Path: "f.go", Content: "x", Hash: "h", Size: 1, Mtime: 1, IndexedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.StoreChunks("f.go", []Chunk{{Content: "c", Type: "text", StartLine: 1, EndLine: 1}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("StoreChunks: %v", err)
+	}
+	// 120 vector rows to span two bulk INSERT batches (100 + 20)
+	rows := make([]VectorRow, 120)
+	for i := range rows {
+		rows[i] = VectorRow{Term: "term" + strconv.Itoa(i), TF: 0.5, TFIDF: 1, RawFreq: 1}
+	}
+	if err := s.StoreChunkVectors(ids[0], rows); err != nil {
+		t.Fatalf("StoreChunkVectors: %v", err)
+	}
+	// Search for a term in the second batch
+	idf, candidates, err := s.SearchCandidates([]string{"term100"})
+	if err != nil {
+		t.Fatalf("SearchCandidates: %v", err)
+	}
+	if len(idf) != 1 || idf["term100"] <= 0 || len(candidates) != 1 {
+		t.Errorf("SearchCandidates: idf=%v candidates=%d", idf, len(candidates))
 	}
 }
 

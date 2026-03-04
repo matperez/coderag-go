@@ -12,6 +12,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const (
+	maxChunkRowsPerInsert  = 100 // batch size for multi-row INSERT into chunks (under SQLite parameter limit)
+	maxVectorRowsPerInsert = 100 // batch size for multi-row INSERT into document_vectors
+)
+
+// execer is satisfied by *sql.DB and *sql.Tx for bulk insert helpers.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // SQLiteStorage implements Storage using SQLite.
 type SQLiteStorage struct {
 	db *sql.DB
@@ -107,19 +117,7 @@ func (s *txStorage) StoreChunks(filePath string, chunks []Chunk) ([]int64, error
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(chunks))
-	for _, c := range chunks {
-		res, err := s.tx.Exec(`
-			INSERT INTO chunks (file_id, content, type, start_line, end_line, metadata, token_count, magnitude)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, fileID, c.Content, c.Type, c.StartLine, c.EndLine, nullString(c.Metadata), c.TokenCount, c.Magnitude)
-		if err != nil {
-			return nil, err
-		}
-		id, _ := res.LastInsertId()
-		ids = append(ids, id)
-	}
-	return ids, nil
+	return bulkInsertChunks(s.tx, fileID, chunks)
 }
 
 func (s *txStorage) StoreChunkVectors(chunkID int64, rows []VectorRow) error {
@@ -127,15 +125,7 @@ func (s *txStorage) StoreChunkVectors(chunkID int64, rows []VectorRow) error {
 	if err != nil {
 		return err
 	}
-	for _, r := range rows {
-		_, err = s.tx.Exec(`
-			INSERT INTO document_vectors (chunk_id, term, tf, tfidf, raw_freq) VALUES (?, ?, ?, ?, ?)
-		`, chunkID, r.Term, r.TF, r.TFIDF, r.RawFreq)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return bulkInsertChunkVectors(s.tx, chunkID, rows)
 }
 
 func (s *txStorage) GetFile(path string) (*File, error) {
@@ -462,21 +452,7 @@ func (s *SQLiteStorage) StoreChunks(filePath string, chunks []Chunk) ([]int64, e
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(chunks))
-	for _, c := range chunks {
-		tokenCount := c.TokenCount
-		magnitude := c.Magnitude
-		res, err := s.db.Exec(`
-			INSERT INTO chunks (file_id, content, type, start_line, end_line, metadata, token_count, magnitude)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, fileID, c.Content, c.Type, c.StartLine, c.EndLine, nullString(c.Metadata), tokenCount, magnitude)
-		if err != nil {
-			return nil, err
-		}
-		id, _ := res.LastInsertId()
-		ids = append(ids, id)
-	}
-	return ids, nil
+	return bulkInsertChunks(s.db, fileID, chunks)
 }
 
 // StoreChunkVectors inserts TF-IDF vector rows for a chunk. Replaces any existing vectors for that chunk.
@@ -485,15 +461,7 @@ func (s *SQLiteStorage) StoreChunkVectors(chunkID int64, rows []VectorRow) error
 	if err != nil {
 		return err
 	}
-	for _, r := range rows {
-		_, err = s.db.Exec(`
-			INSERT INTO document_vectors (chunk_id, term, tf, tfidf, raw_freq) VALUES (?, ?, ?, ?, ?)
-		`, chunkID, r.Term, r.TF, r.TFIDF, r.RawFreq)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return bulkInsertChunkVectors(s.db, chunkID, rows)
 }
 
 // GetFile returns the file by path, or nil if not found.
@@ -794,6 +762,70 @@ func (s *SQLiteStorage) ListChunkIDsByFile(path string) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// bulkInsertChunks inserts chunks in batches using multi-row INSERT. Returns inserted chunk IDs in order.
+func bulkInsertChunks(exec execer, fileID int64, chunks []Chunk) ([]int64, error) {
+	if len(chunks) == 0 {
+		return nil, nil
+	}
+	ids := make([]int64, 0, len(chunks))
+	const colsPerRow = 8
+	for i := 0; i < len(chunks); i += maxChunkRowsPerInsert {
+		end := i + maxChunkRowsPerInsert
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		batch := chunks[i:end]
+		n := len(batch)
+		placeholders := strings.Repeat("(?, ?, ?, ?, ?, ?, ?, ?),", n)
+		placeholders = placeholders[:len(placeholders)-1]
+		query := "INSERT INTO chunks (file_id, content, type, start_line, end_line, metadata, token_count, magnitude) VALUES " + placeholders
+		args := make([]any, 0, n*colsPerRow)
+		for _, c := range batch {
+			args = append(args, fileID, c.Content, c.Type, c.StartLine, c.EndLine, nullString(c.Metadata), c.TokenCount, c.Magnitude)
+		}
+		res, err := exec.Exec(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		lastID, err := res.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		for j := n - 1; j >= 0; j-- {
+			ids = append(ids, lastID-int64(j))
+		}
+	}
+	return ids, nil
+}
+
+// bulkInsertChunkVectors inserts document_vectors rows in batches using multi-row INSERT.
+func bulkInsertChunkVectors(exec execer, chunkID int64, rows []VectorRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	const colsPerRow = 5
+	for i := 0; i < len(rows); i += maxVectorRowsPerInsert {
+		end := i + maxVectorRowsPerInsert
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[i:end]
+		n := len(batch)
+		placeholders := strings.Repeat("(?, ?, ?, ?, ?),", n)
+		placeholders = placeholders[:len(placeholders)-1]
+		query := "INSERT INTO document_vectors (chunk_id, term, tf, tfidf, raw_freq) VALUES " + placeholders
+		args := make([]any, 0, n*colsPerRow)
+		for _, r := range batch {
+			args = append(args, chunkID, r.Term, r.TF, r.TFIDF, r.RawFreq)
+		}
+		_, err := exec.Exec(query, args...)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func nullString(s string) interface{} {
