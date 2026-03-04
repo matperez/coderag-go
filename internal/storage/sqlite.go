@@ -32,6 +32,18 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set synchronous: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA cache_size=-64000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set cache_size: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA temp_store=MEMORY"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set temp_store: %w", err)
+	}
 	slog.Info("database open", "db", dbPath)
 	if err := RunMigrations(db); err != nil {
 		_ = db.Close()
