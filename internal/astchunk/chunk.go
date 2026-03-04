@@ -30,8 +30,16 @@ var ChunkNodeTypes = map[string][]string{
 	"json":       {`object`, `array`, `pair`},
 }
 
+// nodeBounds holds extracted node data so we can release the tree before building chunks.
+type nodeBounds struct {
+	StartByte, EndByte int
+	StartLine, EndLine int
+	Type               string
+}
+
 // ChunkByAST splits content into chunks using AST boundaries (functions, types, classes).
 // Returns (chunks, true) if AST parsing succeeded, or (nil, false) to use character-based fallback.
+// The tree is closed as soon as bounds are collected so the AST cache can be freed.
 // maxChunkSize is used to split oversized nodes and to merge small consecutive chunks.
 func ChunkByAST(ctx context.Context, content string, ext string, maxChunkSize int) ([]chunk.Chunk, bool) {
 	if maxChunkSize <= 0 {
@@ -46,38 +54,47 @@ func ChunkByAST(ctx context.Context, content string, ext string, maxChunkSize in
 	if tree == nil {
 		return nil, false
 	}
-	defer tree.Close()
 	root := tree.RootNode()
 	if root == nil || root.HasError() {
+		tree.Close()
 		return nil, false
 	}
 	types, ok := ChunkNodeTypes[ext]
 	if !ok {
+		tree.Close()
 		return nil, false
 	}
 	typeSet := make(map[string]bool)
 	for _, t := range types {
 		typeSet[t] = true
 	}
-	var nodes []*sitter.Node
-	collectChunkNodes(root, typeSet, &nodes)
-	if len(nodes) == 0 {
+	contentBytes := []byte(content)
+	var bounds []nodeBounds
+	collectChunkBounds(root, typeSet, &bounds)
+	imports := extractImports(root, contentBytes, ext)
+	tree.Close() // release tree and its cache before building chunks
+	if len(bounds) == 0 {
 		return nil, false
 	}
-	imports := extractImports(root, []byte(content), ext)
-	chunks := buildChunksFromNodes([]byte(content), nodes, imports, maxChunkSize)
+	chunks := buildChunksFromBounds(contentBytes, bounds, imports, maxChunkSize)
 	return chunks, true
 }
 
-func collectChunkNodes(n *sitter.Node, typeSet map[string]bool, out *[]*sitter.Node) {
+func collectChunkBounds(n *sitter.Node, typeSet map[string]bool, out *[]nodeBounds) {
 	if typeSet[n.Type()] {
-		*out = append(*out, n)
+		*out = append(*out, nodeBounds{
+			StartByte: int(n.StartByte()),
+			EndByte:   int(n.EndByte()),
+			StartLine: int(n.StartPoint().Row) + 1,
+			EndLine:   int(n.EndPoint().Row) + 1,
+			Type:      n.Type(),
+		})
 		return
 	}
 	for i := 0; i < int(n.ChildCount()); i++ {
 		child := n.Child(i)
 		if child != nil {
-			collectChunkNodes(child, typeSet, out)
+			collectChunkBounds(child, typeSet, out)
 		}
 	}
 }
@@ -99,20 +116,18 @@ func extractImports(root *sitter.Node, content []byte, ext string) string {
 	return ""
 }
 
-func buildChunksFromNodes(content []byte, nodes []*sitter.Node, imports string, maxChunkSize int) []chunk.Chunk {
+func buildChunksFromBounds(content []byte, bounds []nodeBounds, imports string, maxChunkSize int) []chunk.Chunk {
 	var chunks []chunk.Chunk
-	for _, n := range nodes {
-		part := string(content[n.StartByte():n.EndByte()])
-		startLine := int(n.StartPoint().Row) + 1
-		endLine := int(n.EndPoint().Row) + 1
-		chunkType := nodeTypeToChunkType(n.Type())
+	for _, b := range bounds {
+		part := string(content[b.StartByte:b.EndByte])
+		chunkType := nodeTypeToChunkType(b.Type)
 		if len(part) > maxChunkSize {
 			// Split by character (line boundaries)
 			sub := chunk.ChunkByCharacters(part, maxChunkSize)
 			for i := range sub {
 				sub[i].Type = chunkType
-				sub[i].StartLine = startLine
-				sub[i].EndLine = endLine
+				sub[i].StartLine = b.StartLine
+				sub[i].EndLine = b.EndLine
 				if i > 0 {
 					sub[i].StartLine = sub[i-1].EndLine + 1
 				}
@@ -125,8 +140,8 @@ func buildChunksFromNodes(content []byte, nodes []*sitter.Node, imports string, 
 			chunks = append(chunks, chunk.Chunk{
 				Content:   part,
 				Type:      chunkType,
-				StartLine: startLine,
-				EndLine:   endLine,
+				StartLine: b.StartLine,
+				EndLine:   b.EndLine,
 			})
 		}
 	}

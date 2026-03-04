@@ -3,6 +3,8 @@
 # Build output
 bin/
 
+pprof-capture/
+
 # LanceDB native artifacts (see Makefile target download-lancedb)
 /lib/
 /include/
