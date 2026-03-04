@@ -106,6 +106,7 @@ func main() {
 	idx := indexer.New(indexer.Config{
 		Storage:           st,
 		Root:              rootPath,
+		DataDir:           dataDir,
 		MaxFileSize:       *maxSize,
 		IndexingBatchSize: envInt("INDEXING_BATCH_SIZE"), // 0 = default 50
 		Embedder:          embedder,

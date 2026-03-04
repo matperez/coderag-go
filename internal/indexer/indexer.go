@@ -16,6 +16,7 @@ import (
 	"github.com/matperez/coderag-go/internal/astchunk"
 	"github.com/matperez/coderag-go/internal/chunk"
 	"github.com/matperez/coderag-go/internal/embeddings"
+	"github.com/matperez/coderag-go/internal/metadata"
 	"github.com/matperez/coderag-go/internal/scan"
 	"github.com/matperez/coderag-go/internal/storage"
 	"github.com/matperez/coderag-go/internal/tokenizer"
@@ -53,6 +54,7 @@ type Indexer struct {
 	storage           storage.Storage
 	tok               *tokenizer.Tokenizer
 	root              string
+	dataDir           string // project data dir (metadata.json, index.db); empty = skip metadata IDF flag
 	maxSize           int64
 	maxChunk          int
 	indexingBatchSize int
@@ -78,6 +80,7 @@ type IndexStatus struct {
 type Config struct {
 	Storage           storage.Storage
 	Root              string
+	DataDir           string // project data dir for metadata.json (empty = skip IDF rebuild flag)
 	MaxFileSize       int64
 	MaxChunkSize      int
 	IndexingBatchSize int                 // files per DB transaction batch (0 = default 50)
@@ -101,6 +104,7 @@ func New(cfg Config) *Indexer {
 		storage:           cfg.Storage,
 		tok:               tokenizer.New(),
 		root:              cfg.Root,
+		dataDir:           cfg.DataDir,
 		maxSize:           cfg.MaxFileSize,
 		maxChunk:          cfg.MaxChunkSize,
 		indexingBatchSize: batchSize,
@@ -340,6 +344,22 @@ func (x *Indexer) Index(ctx context.Context) error {
 	total := len(entries)
 	slog.Info("indexing started", "total_files", total)
 
+	// If previous run was interrupted during IDF rebuild, run catch-up rebuild once.
+	if x.dataDir != "" {
+		cc, _ := x.storage.ChunkCount()
+		if cc > 0 {
+			m, err := metadata.Read(x.dataDir)
+			if err == nil && m != nil && m.IDFRebuildCompletedAt == "" {
+				slog.Info("IDF rebuild was incomplete, rebuilding…")
+				if err := x.storage.RebuildIDFAndTfidf(); err != nil {
+					slog.Warn("catch-up IDF rebuild failed", "error", err)
+				} else if err := metadata.SetIDFRebuildCompleted(x.dataDir); err != nil {
+					slog.Warn("metadata SetIDFRebuildCompleted failed", "error", err)
+				}
+			}
+		}
+	}
+
 	type fileToIndex struct {
 		path    string
 		content string
@@ -465,6 +485,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 
 	processed := 0
 	filesIndexedThisRun := false
+	idfFlagCleared := false
 	var pending []fileWriteData
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -510,6 +531,10 @@ func (x *Indexer) Index(ctx context.Context) error {
 		pending = append(pending, data)
 		slog.Debug("indexed file", "path", path, "processed", processed, "total", total, "progress_pct", x.status.Progress)
 		if len(pending) >= x.indexingBatchSize {
+			if !idfFlagCleared && x.dataDir != "" {
+				_ = metadata.ClearIDFRebuildCompleted(x.dataDir)
+				idfFlagCleared = true
+			}
 			if err := flushPending(pending); err != nil {
 				slog.Warn("batch transaction failed", "error", err)
 			}
@@ -517,6 +542,9 @@ func (x *Indexer) Index(ctx context.Context) error {
 		}
 	}
 	if len(pending) > 0 {
+		if !idfFlagCleared && x.dataDir != "" {
+			_ = metadata.ClearIDFRebuildCompleted(x.dataDir)
+		}
 		if err := flushPending(pending); err != nil {
 			slog.Warn("batch transaction failed", "error", err)
 		}
@@ -546,6 +574,11 @@ func (x *Indexer) Index(ctx context.Context) error {
 	if err := x.storage.RebuildIDFAndTfidf(); err != nil {
 		slog.Error("rebuild IDF and TF-IDF failed", "error", err)
 		return err
+	}
+	if x.dataDir != "" {
+		if err := metadata.SetIDFRebuildCompleted(x.dataDir); err != nil {
+			slog.Warn("metadata SetIDFRebuildCompleted failed", "error", err)
+		}
 	}
 	x.status.Progress = 100
 	fc, _ := x.storage.FileCount()
