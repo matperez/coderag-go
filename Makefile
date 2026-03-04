@@ -1,4 +1,4 @@
-.PHONY: build install test lint clean download-lancedb
+.PHONY: build build-cli build-no-embeddings install test lint clean download-lancedb
 
 # Сборка с эмбеддингами (LanceDB). Требует: make download-lancedb и CGO.
 # Платформа определяется автоматически (darwin_arm64, darwin_amd64, linux_amd64, ...).
@@ -11,8 +11,21 @@ build:
 	@mkdir -p bin
 	@test -f $(LANCEDB_LIB) || (echo "LanceDB native lib not found. Run: make download-lancedb"; exit 1)
 	$(CGO_LANCEDB) go build -tags lancedb -o bin/coderag-mcp ./cmd/coderag-mcp
+	$(CGO_LANCEDB) go build -tags lancedb -o bin/coderag-cli ./cmd/coderag-cli
 
-# Установка: копирование бинарника из bin/ в GOBIN (или GOPATH/bin). Сначала make build.
+# Сборка только CLI (с эмбеддингами).
+build-cli:
+	@mkdir -p bin
+	@test -f $(LANCEDB_LIB) || (echo "LanceDB native lib not found. Run: make download-lancedb"; exit 1)
+	$(CGO_LANCEDB) go build -tags lancedb -o bin/coderag-cli ./cmd/coderag-cli
+
+# Сборка без эмбеддингов (только BM25). MCP и CLI по отдельности.
+build-no-embeddings:
+	@mkdir -p bin
+	go build -o bin/coderag-mcp ./cmd/coderag-mcp
+	go build -o bin/coderag-cli ./cmd/coderag-cli
+
+# Установка: копирование бинарников из bin/ в GOBIN (или GOPATH/bin). Сначала make build.
 GOBIN := $(shell go env GOBIN)
 ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
@@ -20,15 +33,11 @@ endif
 install:
 	@test -f bin/coderag-mcp || (echo "Binary not found. Run: make build"; exit 1)
 	cp bin/coderag-mcp $(GOBIN)/coderag-mcp
+	@test -f bin/coderag-cli && cp bin/coderag-cli $(GOBIN)/coderag-cli || true
 
 # Скачать нативные библиотеки LanceDB (один раз перед make build).
 download-lancedb:
 	@curl -sSL https://raw.githubusercontent.com/lancedb/lancedb-go/main/scripts/download-artifacts.sh | bash
-
-# Сборка без эмбеддингов (только BM25).
-build-no-embeddings:
-	@mkdir -p bin
-	go build -o bin/coderag-mcp ./cmd/coderag-mcp
 
 test:
 	go test ./...
