@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	maxChunkRowsPerInsert  = 100 // batch size for multi-row INSERT into chunks (under SQLite parameter limit)
-	maxVectorRowsPerInsert = 100 // batch size for multi-row INSERT into document_vectors
+	maxChunkRowsPerInsert         = 100 // batch size for multi-row INSERT into chunks (under SQLite parameter limit)
+	maxVectorRowsPerInsert        = 100 // batch size for multi-row INSERT into document_vectors
+	rebuildIDFProgressIntervalPct = 10  // log rebuild IDF progress every N%
 )
 
 // execer is satisfied by *sql.DB and *sql.Tx for bulk insert helpers.
@@ -603,13 +604,22 @@ func (s *SQLiteStorage) RebuildIDFAndTfidf() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, t := range terms {
+	lastLoggedPct := -1
+	for i, t := range terms {
 		idf := math.Log((n+1)/float64(t.df+1)) + 1
 		_, err := s.db.Exec("UPDATE document_vectors SET tfidf = tf * ? WHERE term = ?", idf, t.term)
 		if err != nil {
 			return err
 		}
+		if len(terms) > 0 {
+			pct := (i + 1) * 100 / len(terms)
+			if pct > lastLoggedPct && (pct%rebuildIDFProgressIntervalPct == 0 || pct == 100) {
+				slog.Info("rebuild IDF progress", "progress_pct", pct, "terms_updated", i+1, "total_terms", len(terms))
+				lastLoggedPct = pct
+			}
+		}
 	}
+	slog.Info("rebuild IDF: updating chunk magnitudes")
 	_, err = s.db.Exec(`
 		UPDATE chunks SET magnitude = (
 			SELECT COALESCE(SQRT(SUM(tfidf * tfidf)), 0) FROM document_vectors WHERE chunk_id = chunks.id

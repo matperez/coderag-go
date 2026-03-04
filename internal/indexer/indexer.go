@@ -529,7 +529,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 		x.status.IndexedChunks = cc
 		x.status.ProcessedFiles = fc
 		x.status.CurrentFile = ""
-		slog.Info("indexing done", "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
+		slog.Info("indexing done", "progress_pct", 100, "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
 		if x.watch {
 			return x.runWatcher(ctx)
 		}
@@ -542,7 +542,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 		}
 		slog.Info("generating and writing embeddings done")
 	}
-	slog.Info("rebuilding IDF and TF-IDF from storage")
+	slog.Info("rebuilding IDF and TF-IDF from storage", "progress_pct", 0)
 	if err := x.storage.RebuildIDFAndTfidf(); err != nil {
 		slog.Error("rebuild IDF and TF-IDF failed", "error", err)
 		return err
@@ -553,7 +553,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 	x.status.IndexedChunks = cc
 	x.status.ProcessedFiles = fc
 	x.status.CurrentFile = ""
-	slog.Info("indexing done", "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
+	slog.Info("indexing done", "progress_pct", 100, "processed_files", x.status.ProcessedFiles, "indexed_chunks", x.status.IndexedChunks)
 	if x.watch {
 		return x.runWatcher(ctx)
 	}
