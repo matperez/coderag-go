@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -232,9 +233,47 @@ func runSearch(root string, jsonOut bool, args []string) {
 	}
 
 	if jsonOut {
-		// Task 4: output JSON
+		writeSearchResultsJSON(results, *includeContent, root)
 	} else {
 		writeSearchResultsMarkdown(results, *includeContent, root)
+	}
+}
+
+type searchResultJSON struct {
+	URI          string   `json:"uri"`
+	Path         string   `json:"path"`
+	Score        float64  `json:"score"`
+	StartLine    int      `json:"start_line"`
+	EndLine      int      `json:"end_line"`
+	Content      string   `json:"content,omitempty"`
+	MatchedTerms []string `json:"matched_terms"`
+}
+
+func writeSearchResultsJSON(results []search.Result, includeContent bool, root string) {
+	out := make([]searchResultJSON, 0, len(results))
+	for _, r := range results {
+		path := strings.TrimPrefix(r.URI, "file://")
+		if root != "" && !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		item := searchResultJSON{
+			URI:          r.URI,
+			Path:         path,
+			Score:        r.Score,
+			StartLine:    r.StartLine,
+			EndLine:      r.EndLine,
+			MatchedTerms: r.MatchedTerms,
+		}
+		if includeContent {
+			item.Content = r.Content
+		}
+		out = append(out, item)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(map[string]any{"results": out}); err != nil {
+		slog.Error("json encode failed", "error", err)
+		os.Exit(1)
 	}
 }
 
