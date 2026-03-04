@@ -463,10 +463,7 @@ func (x *Indexer) Index(ctx context.Context) error {
 	}
 
 	processed := 0
-	var batch []fileToIndex
-	batchSize := x.indexingBatchSize
 	filesIndexedThisRun := false
-	batchNum := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -502,20 +499,9 @@ func (x *Indexer) Index(ctx context.Context) error {
 				}
 			}
 		}
-		batch = append(batch, fileToIndex{path: path, content: string(content), e: e})
-		if len(batch) >= batchSize {
-			filesIndexedThisRun = true
-			batchNum++
-			slog.Info("processing batch", "batch", batchNum, "files", len(batch))
-			processBatch(batch)
-			batch = batch[:0]
-		}
-	}
-	if len(batch) > 0 {
 		filesIndexedThisRun = true
-		batchNum++
-		slog.Info("processing batch", "batch", batchNum, "files", len(batch))
-		processBatch(batch)
+		processBatch([]fileToIndex{{path: path, content: string(content), e: e}})
+		slog.Debug("indexed file", "path", path, "processed", processed, "total", total, "progress_pct", x.status.Progress)
 	}
 
 	if !filesIndexedThisRun {
