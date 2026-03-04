@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/matperez/coderag-go/internal/datadir"
+	"github.com/matperez/coderag-go/internal/metadata"
 	"github.com/matperez/coderag-go/internal/storage"
 )
 
@@ -64,7 +65,7 @@ func openStorage(root string) (*storage.SQLiteStorage, string, error) {
 }
 
 func runStatus(root string, jsonOut bool) {
-	st, _, err := openStorage(root)
+	st, dataDir, err := openStorage(root)
 	if err != nil {
 		slog.Error("status failed", "error", err)
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -83,10 +84,30 @@ func runStatus(root string, jsonOut bool) {
 		os.Exit(1)
 	}
 
+	meta, _ := metadata.Read(dataDir)
+	var lastAccessed, idfRebuild string
+	if meta != nil {
+		lastAccessed = meta.LastAccessedAt
+		idfRebuild = meta.IDFRebuildCompletedAt
+	}
+
 	if jsonOut {
-		fmt.Printf(`{"files":%d,"chunks":%d}`+"\n", files, chunks)
+		fmt.Printf(`{"files":%d,"chunks":%d`, files, chunks)
+		if lastAccessed != "" {
+			fmt.Printf(`,"last_accessed_at":%q`, lastAccessed)
+		}
+		if idfRebuild != "" {
+			fmt.Printf(`,"idf_rebuild_completed_at":%q`, idfRebuild)
+		}
+		fmt.Println("}")
 	} else {
 		fmt.Printf("files: %d\nchunks: %d\n", files, chunks)
+		if lastAccessed != "" {
+			fmt.Printf("last_accessed_at: %s\n", lastAccessed)
+		}
+		if idfRebuild != "" {
+			fmt.Printf("idf_rebuild_completed_at: %s\n", idfRebuild)
+		}
 	}
 }
 
