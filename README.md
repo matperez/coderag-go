@@ -142,3 +142,7 @@ make lint    # golangci-lint run
 **Benchmarks:** run `go test -bench=. -benchmem ./internal/tokenizer/ ./internal/search/ ./internal/indexer/` to measure tokenization, search, and indexing performance; use to catch regressions and justify optimizations.
 
 To build without LanceDB (BM25-only, no vector store), run `make build-no-embeddings`. The resulting binaries will use BM25-only search when the vector store is unavailable.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
