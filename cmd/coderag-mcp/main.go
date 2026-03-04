@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,10 +32,24 @@ func main() {
 	root := flag.String("root", ".", "project root to index/search")
 	indexOnly := flag.Bool("index-only", false, "run indexing and exit")
 	maxSize := flag.Int64("max-size", 0, "max file size in bytes (0 = no limit)")
+	pprofAddr := flag.String("pprof", "", "enable pprof HTTP server at address, e.g. :6060 (or set CODERAG_PPROF)")
 	flag.Parse()
 
 	level := parseLogLevel(*logLevel)
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
+	addr := *pprofAddr
+	if addr == "" {
+		addr = os.Getenv("CODERAG_PPROF")
+	}
+	if addr != "" {
+		go func() {
+			slog.Info("pprof server listening", "addr", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				slog.Error("pprof server failed", "error", err)
+			}
+		}()
+	}
 
 	rootPath, err := filepath.Abs(*root)
 	if err != nil {

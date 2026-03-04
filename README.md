@@ -46,8 +46,11 @@ If the embedding API is unreachable or the vector store cannot be opened, the ap
 - `--index-only` — run indexing and exit (do not start MCP)
 - `--max-size` — max file size in bytes (0 = no limit)
 - `--log-level` — log level: `debug`, `info`, `warn`, `error` (default: from `CODERAG_LOG` or `info`)
+- `--pprof` — enable pprof HTTP server at address, e.g. `:6060` (or set `CODERAG_PPROF`); use for CPU/memory profiling during indexing
 
 **Logging:** output goes to stderr (text format). The `CODERAG_LOG` environment variable sets the level when the flag is not used (`debug`, `info`, `warn`, `error`). Logged: startup (root, data_dir); indexing progress (every 10 files and on completion); after all files are processed — IDF computation, storing chunks and BM25 vectors, and (when embeddings are enabled) generating and writing embeddings; then `indexing done`; tool calls (codebase_search, codebase_index_status); search errors; skipped files.
+
+**Profiling:** run with `--pprof :6060` (or `CODERAG_PPROF=:6060`). Then open `http://localhost:6060/debug/pprof/` in a browser or run `go tool pprof -http=:8080 http://localhost:6060/debug/pprof/profile?seconds=30` to capture a 30s CPU profile, or `go tool pprof http://localhost:6060/debug/pprof/heap` for a heap snapshot. Use this to see where CPU or memory is spent during indexing.
 
 **Examples:**
 
