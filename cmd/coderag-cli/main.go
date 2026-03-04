@@ -4,13 +4,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/matperez/coderag-go/internal/datadir"
 	"github.com/matperez/coderag-go/internal/embeddings"
@@ -24,31 +25,62 @@ import (
 const requestTimeout = 30 * time.Second
 
 func main() {
-	root := flag.String("root", ".", "project root (index is under ~/.coderag-go/projects/<hash> by root)")
-	jsonOut := flag.Bool("json", false, "output JSON")
-	flag.Parse()
-
-	args := flag.Args()
-	if len(args) < 1 {
-		printUsage()
-		os.Exit(1)
-	}
-	subcmd := args[0]
-	switch subcmd {
-	case "status":
-		runStatus(*root, *jsonOut)
-	case "search":
-		runSearch(*root, *jsonOut, args[1:])
-	default:
-		printUsage()
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: coderag-cli [--root <path>] [--json] <command> [args]\n")
-	fmt.Fprintf(os.Stderr, "  status   show index stats (files, chunks)\n")
-	fmt.Fprintf(os.Stderr, "  search   search the index (requires query)\n")
+var rootCmd = &cobra.Command{
+	Use:   "coderag-cli",
+	Short: "Console client for querying an existing CodeRAG index",
+	Long:  "Query an existing index (no indexing). Index must be built with coderag-mcp --root <path> --index-only.",
+}
+
+func init() {
+	rootCmd.PersistentFlags().String("root", ".", "project root (index is under ~/.coderag-go/projects/<hash> by root)")
+	rootCmd.PersistentFlags().Bool("json", false, "output JSON")
+	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(searchCmd)
+
+	searchCmd.Flags().IntP("limit", "n", 10, "max results")
+	searchCmd.Flags().Bool("include-content", false, "include snippet content in output")
+	searchCmd.Flags().String("ext", "", "comma-separated extensions e.g. .go,.js")
+	searchCmd.Flags().String("path-filter", "", "include only paths containing this substring")
+	searchCmd.Flags().String("exclude", "", "comma-separated substrings to exclude from paths")
+}
+
+var statusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show index stats (files, chunks)",
+	RunE:  runStatusCmd,
+}
+
+func runStatusCmd(cmd *cobra.Command, _ []string) error {
+	root, _ := cmd.Root().PersistentFlags().GetString("root")
+	jsonOut, _ := cmd.Root().PersistentFlags().GetBool("json")
+	runStatus(root, jsonOut)
+	return nil
+}
+
+var searchCmd = &cobra.Command{
+	Use:   "search [query]",
+	Short: "Search the index",
+	Long:  "Search by keywords or natural language. Query is required.",
+	Args:  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+	RunE:  runSearchCmd,
+}
+
+func runSearchCmd(cmd *cobra.Command, args []string) error {
+	root, _ := cmd.Root().PersistentFlags().GetString("root")
+	jsonOut, _ := cmd.Root().PersistentFlags().GetBool("json")
+	limit, _ := cmd.Flags().GetInt("limit")
+	includeContent, _ := cmd.Flags().GetBool("include-content")
+	ext, _ := cmd.Flags().GetString("ext")
+	pathFilter, _ := cmd.Flags().GetString("path-filter")
+	exclude, _ := cmd.Flags().GetString("exclude")
+	query := args[0]
+	runSearch(root, jsonOut, query, limit, includeContent, ext, pathFilter, exclude)
+	return nil
 }
 
 func openStorage(root string) (*storage.SQLiteStorage, string, error) {
@@ -81,7 +113,7 @@ func runStatus(root string, jsonOut bool) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	files, err := st.FileCount()
 	if err != nil {
@@ -121,30 +153,14 @@ func runStatus(root string, jsonOut bool) {
 	}
 }
 
-func runSearch(root string, jsonOut bool, args []string) {
-	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	limit := fs.Int("limit", 10, "max results")
-	includeContent := fs.Bool("include-content", false, "include snippet content")
-	ext := fs.String("ext", "", "comma-separated extensions e.g. .go,.js")
-	pathFilter := fs.String("path-filter", "", "include only paths containing this substring")
-	exclude := fs.String("exclude", "", "comma-separated substrings to exclude from paths")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
-	rest := fs.Args()
-	if len(rest) < 1 {
-		fmt.Fprintf(os.Stderr, "query required\n")
-		os.Exit(1)
-	}
-	query := rest[0]
-
+func runSearch(root string, jsonOut bool, query string, limit int, includeContent bool, ext, pathFilter, exclude string) {
 	st, dataDir, err := openStorage(root)
 	if err != nil {
 		slog.Error("search failed", "error", err)
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	var embedder embeddings.Provider
 	var vecStore vectorstore.Store
@@ -188,12 +204,12 @@ func runSearch(root string, jsonOut bool, args []string) {
 		return
 	}
 
-	extSlice := splitComma(*ext)
-	excludeSlice := splitComma(*exclude)
+	extSlice := splitComma(ext)
+	excludeSlice := splitComma(exclude)
 	avgLen := 0.0
 	sc := make([]search.StorageCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		if !matchFilters(c.FilePath, extSlice, *pathFilter, excludeSlice) {
+		if !matchFilters(c.FilePath, extSlice, pathFilter, excludeSlice) {
 			continue
 		}
 		terms := make(map[string]search.TermScore)
@@ -222,20 +238,20 @@ func runSearch(root string, jsonOut bool, args []string) {
 	ctx := context.Background()
 	if hybridOpts != nil {
 		var err error
-		results, err = search.HybridFromStorage(ctx, query, st, idf, sc, avgLen, *limit, hybridOpts)
+		results, err = search.HybridFromStorage(ctx, query, st, idf, sc, avgLen, limit, hybridOpts)
 		if err != nil {
 			slog.Error("search failed", "error", err)
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
 	} else {
-		results = search.SearchFromStorage(query, idf, sc, avgLen, *limit)
+		results = search.SearchFromStorage(query, idf, sc, avgLen, limit)
 	}
 
 	if jsonOut {
-		writeSearchResultsJSON(results, *includeContent, root)
+		writeSearchResultsJSON(results, includeContent, root)
 	} else {
-		writeSearchResultsMarkdown(results, *includeContent, root)
+		writeSearchResultsMarkdown(results, includeContent, root)
 	}
 }
 
