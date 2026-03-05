@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/matperez/coderag-go/internal/datadir"
@@ -157,23 +159,69 @@ func parseLogLevel(flagVal string) slog.Level {
 	}
 }
 
+// flexInt unmarshals from JSON number or string so MCP clients that send limit as string are accepted.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			return nil
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		*f = flexInt(n)
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*f = flexInt(n)
+	return nil
+}
+
 type codebaseSearchArgs struct {
 	Query          string    `json:"query" jsonschema:"Search query"`
-	Limit          *int      `json:"limit" jsonschema:"Max number of results (default 10)"`
-	FileExtensions *[]string `json:"file_extensions" jsonschema:"Filter by extensions e.g. .go,.js"`
-	PathFilter     *string   `json:"path_filter" jsonschema:"Include only paths matching this substring"`
-	ExcludePaths   *[]string `json:"exclude_paths" jsonschema:"Exclude paths containing any of these"`
-	IncludeContent bool      `json:"include_content" jsonschema:"Include snippet content in results"`
+	Limit          *flexInt  `json:"limit,omitempty" jsonschema:"Max number of results (default 10)"`
+	FileExtensions *[]string `json:"file_extensions,omitempty" jsonschema:"Filter by extensions e.g. .go,.js"`
+	PathFilter     *string   `json:"path_filter,omitempty" jsonschema:"Include only paths matching this substring"`
+	ExcludePaths   *[]string `json:"exclude_paths,omitempty" jsonschema:"Exclude paths containing any of these"`
+	IncludeContent bool      `json:"include_content,omitempty" jsonschema:"Include snippet content in results"`
+}
+
+func codebaseSearchInputSchema() *jsonschema.Schema {
+	s, err := jsonschema.For[codebaseSearchArgs](nil)
+	if err != nil {
+		panic("codebase_search input schema: " + err.Error())
+	}
+	if s.Properties != nil {
+		if limitProp := s.Properties["limit"]; limitProp != nil {
+			// Allow integer or string so clients (e.g. Cursor) that send limit as string pass validation.
+			limitProp.Types = []string{"integer", "string"}
+			limitProp.Type = ""
+		}
+	}
+	return s
 }
 
 func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybridOpts *search.HybridOpts) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "codebase_search",
 		Description: "Search the codebase by natural language or keywords using BM25 (and optional vector search). Returns file paths and optional snippets.",
+		InputSchema: codebaseSearchInputSchema(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args codebaseSearchArgs) (*mcp.CallToolResult, any, error) {
 		limit := 10
 		if args.Limit != nil && *args.Limit > 0 {
-			limit = *args.Limit
+			limit = int(*args.Limit)
 		}
 		slog.Info("tool call", "tool", "codebase_search", "query", truncate(args.Query, 80), "limit", limit)
 		tokens := tokenizer.Tokenize(args.Query)
