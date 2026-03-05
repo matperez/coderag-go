@@ -119,6 +119,12 @@ Run indexing before first use:
 
 Same idea: set `command` (path to `coderag-mcp`) and `args: ["--root", "<project_root>"]`. Transport is stdio.
 
+**Testing MCP without Cursor/agent:** use [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to call tools (e.g. `codebase_search`, `codebase_index_status`) over stdio:
+
+```bash
+npx @modelcontextprotocol/inspector -- ./bin/coderag-mcp --root <codebase path>
+```
+
 ## MCP tools
 
 - **codebase_search** — search the codebase (BM25, or BM25 + vector when embeddings are enabled): `query`, `limit`, `file_extensions`, `path_filter`, `exclude_paths`, `include_content`. Response as markdown with paths and optional snippets.
