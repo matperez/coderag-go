@@ -216,7 +216,7 @@ func codebaseSearchInputSchema() *jsonschema.Schema {
 func registerCodebaseSearch(s *mcp.Server, st storage.Storage, root string, hybridOpts *search.HybridOpts) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "codebase_search",
-		Description: "Search the codebase by natural language or keywords using BM25 (and optional vector search). Returns file paths and optional snippets.",
+		Description: "Search the codebase by keywords and phrases using BM25 (and optional vector search). Best for: exact terms, method/type/API names, proto and contract names; path_filter and file_extensions help narrow to a service or language. Returns file paths and optional snippets. Prefer when you need matches to specific identifiers or when filtering by path/extension.",
 		InputSchema: codebaseSearchInputSchema(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args codebaseSearchArgs) (*mcp.CallToolResult, any, error) {
 		limit := 10

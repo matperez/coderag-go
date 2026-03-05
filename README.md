@@ -127,7 +127,7 @@ npx @modelcontextprotocol/inspector -- ./bin/coderag-mcp --root <codebase path>
 
 ## MCP tools
 
-- **codebase_search** — search the codebase (BM25, or BM25 + vector when embeddings are enabled): `query`, `limit`, `file_extensions`, `path_filter`, `exclude_paths`, `include_content`. Response as markdown with paths and optional snippets.
+- **codebase_search** — search the codebase (BM25, or BM25 + vector when embeddings are enabled): `query`, `limit`, `file_extensions`, `path_filter`, `exclude_paths`, `include_content`. Response as markdown with paths and optional snippets. Best for exact terms, method/type/API names, and proto/contract names; use `path_filter` or `file_extensions` to narrow to a service or language.
 - **codebase_index_status** — index status: `is_indexing`, `progress`, file and chunk counts; when indexing, `current_file` is included.
 
 ## Documentation
